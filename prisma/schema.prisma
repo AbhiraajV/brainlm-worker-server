@@ -1,0 +1,288 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+// ============================================================================
+// ENUMS (Simplified - removed ContextType, RecommendationStatus)
+// ============================================================================
+
+enum InterpretationSource {
+  AUTOMATIC // LLM-generated at ingestion
+  THERAPIST // From therapist reasoning module
+  USER // User's own reflection
+}
+
+enum PatternStatus {
+  ACTIVE // Currently relevant pattern
+  SUPERSEDED // Replaced by newer understanding (historical record)
+  DORMANT // Not seen recently, may reactivate
+}
+
+enum InsightStatus {
+  CONFIRMED // High confidence, multiple validations
+  LIKELY // Medium confidence
+  SPECULATIVE // Emerging, limited evidence
+  SUPERSEDED // Replaced by newer insight
+  WEAKENED // Contradictory evidence
+}
+
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  EMERGING
+}
+
+enum ReviewType {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum EvidenceRelevance {
+  PRIMARY     // Core evidence for the insight
+  SUPPORTING  // Additional supporting evidence
+  CONTEXTUAL  // Background context
+}
+
+// ============================================================================
+// CORE TABLES (5 tables - removed Tag, EventTag, EventContext, Recommendation)
+// ============================================================================
+
+// Table 1: User - Anchor entity for all user-owned data
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  timezone  String   @default("UTC") // IANA timezone (e.g., "America/New_York")
+  baseline  String?  @db.Text // Scalable markdown dump for baseline output (multi KB/MB)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships (removed: tags, recommendations)
+  events          Event[]
+  interpretations Interpretation[]
+  patterns        Pattern[]
+  insights        Insight[]
+  reviews         Review[]
+}
+
+// Table 2: Event - Immutable facts (what user said or did)
+model Event {
+  id         String                       @id @default(cuid())
+  userId     String
+  content    String                       @db.Text
+  audioRef   String?
+  occurredAt DateTime
+  createdAt  DateTime                     @default(now())
+  embedding  Unsupported("vector(1536)")? // Optional: embed raw content
+
+  // Relationships (removed: tags, contextAsSource, contextAsTarget)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interpretation Interpretation? // One rich interpretation per event
+  patternEvents  PatternEvent[]
+  insightEvents  InsightEvent[]
+
+  // Indexes
+  @@index([userId])
+  @@index([occurredAt])
+  @@index([userId, occurredAt])
+  @@index([userId, createdAt])
+}
+
+// Table 3: Interpretation - Rich understanding of events (one per event)
+model Interpretation {
+  id        String                       @id @default(cuid())
+  userId    String
+  eventId   String                       @unique // One interpretation per event
+  content   String                       @db.Text // Rich, comprehensive text (500-2000 words)
+  source    InterpretationSource
+  embedding Unsupported("vector(1536)")? // Embed the interpretation
+  createdAt DateTime                     @default(now())
+
+  // Relationships
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event                   Event                     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  insightInterpretations  InsightInterpretation[]
+
+  // Indexes
+  @@index([userId])
+  @@index([eventId])
+  @@index([source])
+  @@index([userId, source])
+}
+
+// Table 4: Pattern - Derived knowledge from repeated behaviors
+model Pattern {
+  id               String                       @id @default(cuid())
+  userId           String
+  description      String                       @db.Text
+  embedding        Unsupported("vector(1536)")? // Embed the pattern
+  firstDetectedAt  DateTime                     @default(now())
+  lastReinforcedAt DateTime                     @default(now())
+  status           PatternStatus                @default(ACTIVE)
+  createdAt        DateTime                     @default(now())
+
+  // Relationships (removed: recommendations)
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patternEvents   PatternEvent[]
+  insightPatterns InsightPattern[]
+
+  // Indexes
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@index([lastReinforcedAt])
+}
+
+// Table 5: PatternEvent - Junction linking Patterns to supporting Events
+model PatternEvent {
+  id        String   @id @default(cuid())
+  patternId String
+  eventId   String
+  addedAt   DateTime @default(now())
+
+  // Relationships
+  pattern Pattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+  event   Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  // Constraints & Indexes
+  @@unique([patternId, eventId])
+  @@index([patternId])
+  @@index([eventId])
+}
+
+// Table 6: Insight - Synthesized understanding from patterns and interpretations
+model Insight {
+  id               String                       @id @default(cuid())
+  userId           String
+  statement        String                       @db.Text // Core insight statement
+  explanation      String                       @db.Text // Detailed reasoning
+  confidence       ConfidenceLevel              @default(EMERGING)
+  status           InsightStatus                @default(SPECULATIVE)
+  category         String?                      // e.g., BEHAVIORAL, EMOTIONAL, PREFERENCE
+  temporalScope    String?                      // e.g., "morning", "weekends", "stressful periods"
+  supersededById   String?                      // ID of newer insight that replaced this
+  supersedes       String?                      // ID of older insight this replaced
+  embedding        Unsupported("vector(1536)")? // Embed the insight for similarity search
+  triggerType      String?                      // What triggered generation
+  triggerEventId   String?                      // Event that triggered if applicable
+  firstDetectedAt  DateTime                     @default(now())
+  lastReinforcedAt DateTime                     @default(now())
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  // Relationships
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  insightEvents           InsightEvent[]
+  insightPatterns         InsightPattern[]
+  insightInterpretations  InsightInterpretation[]
+
+  // Indexes
+  @@index([userId])
+  @@index([userId, status])
+  @@index([status])
+  @@index([category])
+}
+
+// Table 7: InsightEvent - Junction linking Insights to supporting Events
+model InsightEvent {
+  id        String            @id @default(cuid())
+  insightId String
+  eventId   String
+  relevance EvidenceRelevance @default(SUPPORTING)
+  excerpt   String?           @db.Text // Brief relevant excerpt
+  addedAt   DateTime          @default(now())
+
+  // Relationships
+  insight Insight @relation(fields: [insightId], references: [id], onDelete: Cascade)
+  event   Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  // Constraints & Indexes
+  @@unique([insightId, eventId])
+  @@index([insightId])
+  @@index([eventId])
+}
+
+// Table 8: InsightPattern - Junction linking Insights to supporting Patterns
+model InsightPattern {
+  id        String            @id @default(cuid())
+  insightId String
+  patternId String
+  relevance EvidenceRelevance @default(SUPPORTING)
+  excerpt   String?           @db.Text // Brief relevant excerpt
+  addedAt   DateTime          @default(now())
+
+  // Relationships
+  insight Insight @relation(fields: [insightId], references: [id], onDelete: Cascade)
+  pattern Pattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+
+  // Constraints & Indexes
+  @@unique([insightId, patternId])
+  @@index([insightId])
+  @@index([patternId])
+}
+
+// Table 9: InsightInterpretation - Junction linking Insights to supporting Interpretations
+model InsightInterpretation {
+  id               String            @id @default(cuid())
+  insightId        String
+  interpretationId String
+  relevance        EvidenceRelevance @default(SUPPORTING)
+  excerpt          String?           @db.Text // Brief relevant excerpt
+  addedAt          DateTime          @default(now())
+
+  // Relationships
+  insight        Insight        @relation(fields: [insightId], references: [id], onDelete: Cascade)
+  interpretation Interpretation @relation(fields: [interpretationId], references: [id], onDelete: Cascade)
+
+  // Constraints & Indexes
+  @@unique([insightId, interpretationId])
+  @@index([insightId])
+  @@index([interpretationId])
+}
+
+// Table 10: Review - Temporal reflections (daily/weekly/monthly)
+model Review {
+  id                String                       @id @default(cuid())
+  userId            String
+  type              ReviewType
+
+  // Time Anchor
+  periodKey         String                       // "2024-01-15" | "2024-W03" | "2024-01"
+  periodStart       DateTime                     // Start of period (UTC)
+  periodEnd         DateTime                     // End of period (UTC)
+
+  // Content (Hybrid: structured + rendered)
+  structuredContent Json                         // Programmatic access
+  renderedMarkdown  String           @db.Text    // Display
+  summary           String           @db.Text    // 1-3 sentences
+
+  // Embedding for semantic retrieval
+  embedding         Unsupported("vector(1536)")?
+
+  // References (JSON arrays - simpler for append-only data)
+  eventIds          String[]
+  interpretationIds String[]
+  patternIds        String[]
+  insightIds        String[]
+  priorReviewIds    String[]
+
+  // Metadata
+  createdAt         DateTime                     @default(now())
+
+  // Relationships
+  user              User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, periodKey])  // One review per user per type per period
+  @@index([userId])
+  @@index([userId, type])
+  @@index([periodStart])
+}
