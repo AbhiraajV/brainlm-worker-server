@@ -1,5 +1,5 @@
 import prisma from '../prisma';
-import { processNewEvent } from '../jobs';
+import { JobType, JobStatus } from '@prisma/client';
 
 export interface CreateEventInput {
   userId: string;
@@ -9,32 +9,56 @@ export interface CreateEventInput {
 
 export interface CreateEventResult {
   eventId: string;
+  jobId: string;
 }
 
 /**
- * Creates a new event and triggers async interpretation.
- * 
- * Layer 1 of the pipeline:
- * - Event is stored immediately (no blocking on LLM)
- * - Interpretation is triggered async
+ * Creates an event and enqueues it for interpretation atomically.
+ *
+ * Uses a transaction to ensure both event and job are created together,
+ * preventing orphaned events if job creation fails.
+ *
+ * This function is used by the server. For client usage, see:
+ * /src/lib/queue-client.ts → createEventWithProcessing()
+ *
+ * Flow triggered:
+ * 1. INTERPRET_EVENT → creates interpretation
+ * 2. DETECT_PATTERNS → detects/reinforces patterns (chained by handler)
+ * 3. GENERATE_INSIGHTS → generates insights if pattern created/evolved (chained by handler)
  */
 export async function createEvent(input: CreateEventInput): Promise<CreateEventResult> {
-  const event = await prisma.event.create({
-    data: {
-      userId: input.userId,
-      content: input.content,
-      occurredAt: input.occurredAt,
-    },
-    select: { id: true },
-  });
+  const { userId, content, occurredAt } = input;
 
-  // Trigger async interpretation (non-blocking)
-  // In production, this would be a queue job
-  setImmediate(() => {
-    processNewEvent(event.id).catch((err) => {
-      console.error(`[CreateEvent] Failed to process event ${event.id}:`, err);
+  // Use transaction to ensure atomicity - both event and job created together
+  const result = await prisma.$transaction(async (tx) => {
+    // 1. Create the event
+    const event = await tx.event.create({
+      data: {
+        userId,
+        content,
+        occurredAt,
+      },
+      select: { id: true },
     });
+
+    // 2. Create the interpretation job in the same transaction
+    const job = await tx.workerJob.create({
+      data: {
+        type: JobType.INTERPRET_EVENT,
+        payload: { eventId: event.id },
+        status: JobStatus.PENDING,
+        priority: 0,
+        maxAttempts: 3,
+        userId,
+        idempotencyKey: `interpret:${event.id}`,
+      },
+      select: { id: true },
+    });
+
+    return { eventId: event.id, jobId: job.id };
   });
 
-  return { eventId: event.id };
+  console.log(`[CreateEvent] Created event ${result.eventId}, enqueued job ${result.jobId}`);
+
+  return result;
 }

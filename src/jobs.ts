@@ -1,5 +1,5 @@
-import { processMemoryPipeline } from './pipeline';
 import { startReviewCron } from './jobs/review-cron';
+import { startWorker, stopWorker, registerAllHandlers } from './queue';
 
 // Re-export review job functions for easy access
 export {
@@ -12,48 +12,63 @@ export {
 // Re-export cron functions
 export { startReviewCron } from './jobs/review-cron';
 
+// Re-export queue functions for server-side usage
+export { startWorker, stopWorker } from './queue';
+
 // ============================================================================
 // Background Jobs
 // ============================================================================
 
 /**
- * Starts background jobs.
- * Note: Periodic pattern detection has been removed.
- * Pattern detection is now event-triggered via the pipeline.
+ * Starts all background jobs:
+ * 1. Queue worker (processes all job types)
+ * 2. Review cron (schedules daily/weekly/monthly reviews)
  *
- * Review generation runs via cron every hour, checking each user's
- * timezone to determine if reviews are due.
+ * The queue worker handles:
+ * - INTERPRET_EVENT → DETECT_PATTERNS → GENERATE_INSIGHTS (event flow)
+ * - GENERATE_REVIEW → GENERATE_TOMORROW_PLAN → SUGGEST_UOM_UPDATE (review flow)
  */
-export const startBackgroundJobs = () => {
-    console.log('[Jobs] Background jobs initialized');
-    console.log('[Jobs] Pattern detection is now event-triggered (no periodic job)');
+export const startBackgroundJobs = async () => {
+    console.log('[Jobs] Initializing background jobs...');
+
+    // Register all job handlers
+    registerAllHandlers();
+
+    // Start queue worker
+    await startWorker({
+        workerId: `main-worker-${process.pid}`,
+        pollIntervalMin: 100,
+        pollIntervalMax: 2000,
+    });
+    console.log('[Jobs] Queue worker started');
 
     // Start review cron scheduler
     startReviewCron();
+    console.log('[Jobs] Review cron started');
+
+    console.log('[Jobs] Background jobs initialized');
+};
+
+/**
+ * Gracefully stop all background jobs.
+ * Waits for current job to complete before stopping.
+ */
+export const stopBackgroundJobs = async () => {
+    console.log('[Jobs] Stopping background jobs...');
+    await stopWorker(true, 30000); // graceful with 30s timeout
+    console.log('[Jobs] Background jobs stopped');
 };
 
 // ============================================================================
-// Event Processing
+// Legacy: processNewEvent (DEPRECATED)
 // ============================================================================
 
 /**
- * Processes a new event through the full memory pipeline.
- * Called after event is stored in the database.
- *
- * Pipeline stages:
- * 1. Interpretation (Worker 1)
- * 2. Pattern Detection (Worker 2)
- * 3. Recommendation (Worker 3 - future)
+ * @deprecated Use createEventWithProcessing() from queue-client.ts instead.
+ * This function is kept for backwards compatibility.
  */
 export async function processNewEvent(eventId: string): Promise<void> {
-    try {
-        const result = await processMemoryPipeline(eventId);
-        console.log(
-            `[Pipeline] outcome=${result.stages.patternDetect?.outcome}, ` +
-            `patternId=${result.stages.patternDetect?.patternId}`
-        );
-    } catch (error) {
-        console.error(`[Pipeline] Failed for event ${eventId}:`, error);
-        // Don't throw - event creation should succeed even if pipeline fails
-    }
+    console.warn('[Jobs] processNewEvent is deprecated. Use queue-based flow instead.');
+    const { enqueueInterpretEvent } = await import('./queue');
+    await enqueueInterpretEvent({ eventId });
 }

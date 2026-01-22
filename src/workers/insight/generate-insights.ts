@@ -204,66 +204,35 @@ async function persistInsights(
                 newInsight.id
             );
 
-            // Create junction table records for each evidence reference
-            for (const ref of insight.evidenceRefs) {
-                const relevance = mapRelevance(ref.relevance);
-
-                switch (ref.type) {
-                    case 'event':
-                        await tx.insightEvent.create({
-                            data: {
-                                insightId: newInsight.id,
-                                eventId: ref.id,
-                                relevance,
-                                excerpt: ref.excerpt,
-                            },
-                        });
-                        break;
-
-                    case 'pattern':
-                        await tx.insightPattern.create({
-                            data: {
-                                insightId: newInsight.id,
-                                patternId: ref.id,
-                                relevance,
-                                excerpt: ref.excerpt,
-                            },
-                        });
-                        break;
-
-                    case 'interpretation':
-                        await tx.insightInterpretation.create({
-                            data: {
-                                insightId: newInsight.id,
-                                interpretationId: ref.id,
-                                relevance,
-                                excerpt: ref.excerpt,
-                            },
-                        });
-                        break;
-
-                    case 'insight':
-                        // For insight-to-insight references, we could add another junction table
-                        // For now, we skip these as they're less common
-                        console.log(`[InsightPersist] Skipping insight-to-insight reference: ${ref.id}`);
-                        break;
-                }
+            // Auto-link to trigger context (no LLM-provided refs - they hallucinate IDs)
+            if (trigger.eventId) {
+                await tx.insightEvent.create({
+                    data: {
+                        insightId: newInsight.id,
+                        eventId: trigger.eventId,
+                        relevance: 'PRIMARY',
+                    },
+                });
             }
 
-            // Always link to triggering event if not already in evidenceRefs
-            if (trigger.eventId) {
-                const alreadyLinked = insight.evidenceRefs.some(
-                    (ref) => ref.type === 'event' && ref.id === trigger.eventId
-                );
-                if (!alreadyLinked) {
-                    await tx.insightEvent.create({
-                        data: {
-                            insightId: newInsight.id,
-                            eventId: trigger.eventId,
-                            relevance: 'PRIMARY',
-                        },
-                    });
-                }
+            if (trigger.patternId) {
+                await tx.insightPattern.create({
+                    data: {
+                        insightId: newInsight.id,
+                        patternId: trigger.patternId,
+                        relevance: 'PRIMARY',
+                    },
+                });
+            }
+
+            if (trigger.interpretationId) {
+                await tx.insightInterpretation.create({
+                    data: {
+                        insightId: newInsight.id,
+                        interpretationId: trigger.interpretationId,
+                        relevance: 'PRIMARY',
+                    },
+                });
             }
 
             // Update superseded insight with reference to new one
@@ -357,11 +326,14 @@ export async function generateInsights(
         const userBaseline = user?.baseline || 'No baseline available yet.';
 
         // ====================================================================
-        // Step 4: Format context for LLM
+        // Step 4: Format context for LLM (EVENT-CENTRIC)
         // ====================================================================
+        // Extract quantitative projection from the formatted message for later injection
         const userMessage = formatInsightUserMessage({
             userName,
             userBaseline,
+            triggerEvent: context.triggerEvent,
+            triggerInterpretation: context.triggerInterpretation,
             trigger,
             patterns: context.patterns,
             interpretations: context.interpretations,
@@ -372,10 +344,74 @@ export async function generateInsights(
         console.log(`[InsightGeneration] Formatted context (${userMessage.length} chars)`);
 
         // ====================================================================
-        // Step 5: Call LLM
+        // Step 5: Call LLM with Structured Outputs (enforces schema at generation)
         // ====================================================================
         const { modelConfig, systemPrompt } = INSIGHT_GENERATION_PROMPT;
-        console.log(`[InsightGeneration] Calling LLM (${modelConfig.model})`);
+        console.log(`[InsightGeneration] Calling LLM (${modelConfig.model}) with structured outputs`);
+
+        // JSON Schema for OpenAI Structured Outputs - enforces exact enum values
+        const insightJsonSchema = {
+            name: 'insight_output',
+            strict: true,
+            schema: {
+                type: 'object',
+                properties: {
+                    questionsExplored: {
+                        type: 'array',
+                        minItems: 3,
+                        maxItems: 15,
+                        items: {
+                            type: 'object',
+                            properties: {
+                                question: { type: 'string' },
+                                category: {
+                                    type: 'string',
+                                    enum: ['STRUCTURAL', 'BEHAVIORAL', 'PREFERENCE', 'EMOTIONAL', 'CROSS_DOMAIN', 'PROGRESS', 'META', 'SHALLOW_PATTERNS'],
+                                },
+                                answerable: { type: 'boolean' },
+                                reasonIfUnanswerable: { type: ['string', 'null'] },
+                            },
+                            required: ['question', 'category', 'answerable', 'reasonIfUnanswerable'],
+                            additionalProperties: false,
+                        },
+                    },
+                    insights: {
+                        type: 'array',
+                        minItems: 1,
+                        maxItems: 3,
+                        items: {
+                            type: 'object',
+                            properties: {
+                                statement: { type: 'string' },
+                                explanation: { type: 'string' },
+                                confidence: {
+                                    type: 'string',
+                                    enum: ['HIGH', 'MEDIUM', 'EMERGING'],
+                                },
+                                status: {
+                                    type: 'string',
+                                    enum: ['CONFIRMED', 'LIKELY', 'SPECULATIVE', 'SUPERSEDED', 'WEAKENED'],
+                                },
+                                category: {
+                                    type: 'string',
+                                    enum: ['STRUCTURAL', 'BEHAVIORAL', 'PREFERENCE', 'EMOTIONAL', 'CROSS_DOMAIN', 'PROGRESS', 'META', 'SHALLOW_PATTERNS'],
+                                },
+                                temporalScope: { type: ['string', 'null'] },
+                                derivedFromQuestion: { type: ['string', 'null'] },
+                                supersedesInsightId: { type: ['string', 'null'] },
+                                // Quantitative projection - LLM MUST fill this from currentEvent.quantitativeProjection
+                                quantitativeProjection: { type: ['string', 'null'] },
+                            },
+                            required: ['statement', 'explanation', 'confidence', 'status', 'category', 'temporalScope', 'derivedFromQuestion', 'supersedesInsightId', 'quantitativeProjection'],
+                            additionalProperties: false,
+                        },
+                    },
+                    processingNotes: { type: ['string', 'null'] },
+                },
+                required: ['questionsExplored', 'insights', 'processingNotes'],
+                additionalProperties: false,
+            },
+        };
 
         const completion = await openai.chat.completions.create({
             model: modelConfig.model,
@@ -385,7 +421,10 @@ export async function generateInsights(
             ],
             temperature: modelConfig.temperature,
             max_tokens: modelConfig.maxTokens,
-            response_format: { type: modelConfig.responseFormat ?? 'json_object' },
+            response_format: {
+                type: 'json_schema',
+                json_schema: insightJsonSchema,
+            },
         });
 
         const rawResponse = completion.choices[0]?.message?.content;
@@ -439,7 +478,30 @@ export async function generateInsights(
             };
         }
 
-        const persistResult = await persistInsights(userId, output.insights, trigger);
+        // Extract quantitative projection from user message and inject it directly
+        // (bypassing LLM which unreliably returns null)
+        let quantitativeProjection: string | null = null;
+        try {
+            const parsedMessage = JSON.parse(userMessage);
+            quantitativeProjection = parsedMessage.currentEvent?.quantitativeProjection || null;
+            console.log(`[InsightGeneration] Quantitative projection extracted: ${quantitativeProjection}`);
+        } catch (e) {
+            console.log(`[InsightGeneration] Failed to parse userMessage for projection:`, e);
+        }
+
+        // Append quantitative projection to FIRST insight if available
+        const insightsWithProjections = output.insights.map((insight, index) => {
+            // Only add to first insight, and only if not already present
+            if (index === 0 && quantitativeProjection && !insight.explanation.includes(quantitativeProjection)) {
+                return {
+                    ...insight,
+                    explanation: `${insight.explanation} Quantitative projection: ${quantitativeProjection}`,
+                };
+            }
+            return insight;
+        });
+
+        const persistResult = await persistInsights(userId, insightsWithProjections, trigger);
 
         console.log(
             `[InsightGeneration] Persisted: ${persistResult.created.length} created, ` +

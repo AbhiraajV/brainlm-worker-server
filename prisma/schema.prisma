@@ -53,18 +53,61 @@ enum EvidenceRelevance {
 }
 
 // ============================================================================
+// QUEUE ENUMS
+// ============================================================================
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+}
+
+enum JobType {
+  INTERPRET_EVENT
+  DETECT_PATTERNS
+  GENERATE_INSIGHTS
+  GENERATE_REVIEW
+  GENERATE_TOMORROW_PLAN
+  SUGGEST_UOM_UPDATE
+}
+
+// ============================================================================
+// UOM ENUMS
+// ============================================================================
+
+enum UOMSuggestionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  IGNORED
+  EXPIRED
+}
+
+enum UOMDriftType {
+  ADDITION
+  MODIFICATION
+  REMOVAL
+}
+
+// ============================================================================
 // CORE TABLES (5 tables - removed Tag, EventTag, EventContext, Recommendation)
 // ============================================================================
 
 // Table 1: User - Anchor entity for all user-owned data
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  timezone  String   @default("UTC") // IANA timezone (e.g., "America/New_York")
-  baseline  String?  @db.Text // Scalable markdown dump for baseline output (multi KB/MB)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  name                 String?
+  timezone             String    @default("UTC") // IANA timezone (e.g., "America/New_York")
+  baseline             String?   @db.Text // Scalable markdown dump for baseline output (multi KB/MB)
+  lastBaselineUpdate   DateTime? // When baseline was last updated (for UOM suggestion cooldown)
+  nextDailyReviewDue   DateTime? // For robust review scheduling
+  nextWeeklyReviewDue  DateTime? // For robust review scheduling
+  nextMonthlyReviewDue DateTime? // For robust review scheduling
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   // Relationships (removed: tags, recommendations)
   events          Event[]
@@ -72,6 +115,14 @@ model User {
   patterns        Pattern[]
   insights        Insight[]
   reviews         Review[]
+  dailyPlans      DailyPlan[]
+  uomSuggestions  UOMUpdateSuggestion[]
+  workerJobs      WorkerJob[]
+
+  // Indexes for review scheduling queries
+  @@index([nextDailyReviewDue])
+  @@index([nextWeeklyReviewDue])
+  @@index([nextMonthlyReviewDue])
 }
 
 // Table 2: Event - Immutable facts (what user said or did)
@@ -121,14 +172,15 @@ model Interpretation {
 
 // Table 4: Pattern - Derived knowledge from repeated behaviors
 model Pattern {
-  id               String                       @id @default(cuid())
-  userId           String
-  description      String                       @db.Text
-  embedding        Unsupported("vector(1536)")? // Embed the pattern
-  firstDetectedAt  DateTime                     @default(now())
-  lastReinforcedAt DateTime                     @default(now())
-  status           PatternStatus                @default(ACTIVE)
-  createdAt        DateTime                     @default(now())
+  id                 String                       @id @default(cuid())
+  userId             String
+  description        String                       @db.Text
+  embedding          Unsupported("vector(1536)")? // Embed the pattern
+  reinforcementCount Int                          @default(1)  // Track strength without new objects
+  firstDetectedAt    DateTime                     @default(now())
+  lastReinforcedAt   DateTime                     @default(now())
+  status             PatternStatus                @default(ACTIVE)
+  createdAt          DateTime                     @default(now())
 
   // Relationships (removed: recommendations)
   user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -280,9 +332,85 @@ model Review {
 
   // Relationships
   user              User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyPlan         DailyPlan?
 
   @@unique([userId, type, periodKey])  // One review per user per type per period
   @@index([userId])
   @@index([userId, type])
   @@index([periodStart])
+}
+
+// ============================================================================
+// QUEUE & PLANNING TABLES
+// ============================================================================
+
+// WorkerJob - Postgres-backed job queue with FOR UPDATE SKIP LOCKED
+model WorkerJob {
+  id             String    @id @default(cuid())
+  type           JobType
+  payload        Json
+  status         JobStatus @default(PENDING)
+  priority       Int       @default(0)   // Higher priority = processed first
+  availableAt    DateTime  @default(now())
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  lastError      String?   @db.Text
+  lockedAt       DateTime?
+  lockedBy       String?   // Worker instance identifier
+  idempotencyKey String?   @unique
+  userId         String?   // Optional: for user-specific job queries
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+
+  user           User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt, priority])
+  @@index([type, status])
+  @@index([userId, type])
+  @@index([lockedAt])
+}
+
+// DailyPlan - Forward-looking plan generated from daily review
+model DailyPlan {
+  id               String                       @id @default(cuid())
+  userId           String
+  reviewId         String                       @unique
+  targetDate       DateTime                     // The date this plan is for
+  focusAreas       Json                         // [{ area, reasoning, patternRef?, confidence }]
+  sessions         Json                         // [{ timeSlot, activity, reasoning, optional }]
+  warnings         Json                         // [{ warning, patternId, confidence }]
+  ctas             Json                         // [{ action, priority, reasoning }]
+  renderedMarkdown String                       @db.Text
+  embedding        Unsupported("vector(1536)")?
+  createdAt        DateTime                     @default(now())
+
+  user             User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  review           Review                       @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetDate])
+  @@index([userId, targetDate])
+}
+
+// UOMUpdateSuggestion - Suggestions for updating user's operational model (baseline)
+model UOMUpdateSuggestion {
+  id              String              @id @default(cuid())
+  userId          String
+  suggestion      String              @db.Text   // What should be changed
+  reasoning       String              @db.Text   // Why (evidence summary)
+  driftType       UOMDriftType                   // ADDITION, MODIFICATION, REMOVAL
+  confidence      ConfidenceLevel                // How confident in this suggestion
+  patternRefs     String[]                       // Pattern IDs supporting this
+  insightRefs     String[]                       // Insight IDs supporting this
+  reviewRefs      String[]                       // Review IDs supporting this
+  status          UOMSuggestionStatus @default(PENDING)
+  statusChangedAt DateTime?
+  targetSection   String?                        // Which section of baseline to update
+  createdAt       DateTime            @default(now())
+  expiresAt       DateTime?                      // When this suggestion becomes stale
+
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }

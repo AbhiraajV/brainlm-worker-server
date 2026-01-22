@@ -1,8 +1,8 @@
 import prisma from '../../prisma';
 import { openai } from '../../services/openai';
 import { embedText, cosineSimilarity } from '../../services/embedding';
-import { PATTERN_SYNTHESIS_PROMPT, PATTERN_EVOLUTION_PROMPT } from '../../prompts';
-import { PatternOutputSchema, PatternOutcome, InterpretationWithEmbedding } from './schema';
+import { PATTERN_SYNTHESIS_PROMPT, PATTERN_DECISION_PROMPT } from '../../prompts';
+import { PatternOutputSchema, PatternOutcome, InterpretationWithEmbedding, PatternDecisionSchema } from './schema';
 import {
     clusterInterpretations,
     findSimilarPatterns,
@@ -17,12 +17,15 @@ import {
 } from './evidence-selection';
 
 // ============================================================================
-// Thresholds
+// Configuration
 // ============================================================================
 
-const REINFORCE_THRESHOLD = 0.75;  // ≥ 0.75 = reinforce (no LLM call)
-const EVOLVE_THRESHOLD = 0.60;     // ≥ 0.60 = evolve (LLM re-synthesizes)
-// < 0.60 = create new pattern
+// Minimum similarity to include a pattern as a candidate for LLM consideration
+// Embeddings find candidates; LLM makes final decisions
+const CANDIDATE_SIMILARITY_THRESHOLD = 0.30;
+
+// Maximum number of candidate patterns to send to LLM
+const MAX_CANDIDATE_PATTERNS = 5;
 
 // ============================================================================
 // Types
@@ -67,20 +70,20 @@ export class PatternDetectionError extends Error {
  *
  * This is the pipeline-mode pattern detection that:
  * 1. Gets the new interpretation's embedding
- * 2. Uses intelligent full-timeline evidence selection
- * 3. Checks if it matches/reinforces existing patterns
- * 4. Or evolves/creates a pattern via LLM synthesis
+ * 2. Computes similarity with ALL active patterns to find CANDIDATES
+ * 3. ALWAYS calls LLM with candidate patterns to make the final decision
  *
- * Key difference from batch mode:
- * - Triggered per-event (pipeline chain)
- * - Uses full-timeline retrieval with intelligent sampling
- * - ALWAYS produces an outcome (REINFORCED, EVOLVED, or CREATED)
- * - Never silently exits without a pattern
+ * Core Principle: Embeddings find candidates, LLM makes decisions.
+ * - Similarity scores are for FINDING candidates, not for making decisions
+ * - Even high similarity (0.95) doesn't mean semantic relevance
+ * - Only the LLM can determine if an event actually relates to a pattern
  *
- * Outcome Contract:
- * - ≥ 0.75 similarity: REINFORCED_PATTERN (no LLM call)
- * - ≥ 0.60 similarity: EVOLVED_PATTERN (LLM re-synthesizes)
- * - < 0.60 similarity: CREATED_NEW_PATTERN
+ * Outcome Contract (LLM decides):
+ * - REINFORCE: Event clearly adds to an existing pattern
+ * - CREATE: Event represents a genuinely new behavioral pattern
+ * - NONE: Event is isolated, doesn't warrant any pattern action
+ *
+ * Note: EVOLVED_PATTERN is deprecated and no longer produced.
  */
 export async function detectPatternsForEvent(
     input: DetectPatternsForEventInput
@@ -142,6 +145,13 @@ export async function detectPatternsForEvent(
     const trigger = triggerInterpretation[0];
     const triggerEmbedding = parseEmbedding(trigger.embedding);
 
+    // 1b. Get the RAW event content (not the interpretation which may be biased)
+    const triggerEvent = await prisma.event.findUnique({
+        where: { id: triggerEventId },
+        select: { content: true, occurredAt: true },
+    });
+    const rawEventContent = triggerEvent?.content || trigger.content;
+
     // 2. Get existing patterns with similarity scores
     const patternsWithSimilarity = await getExistingPatternsWithSimilarity(userId, triggerEmbedding);
 
@@ -153,61 +163,87 @@ export async function detectPatternsForEvent(
     const eventIds = [triggerEventId, ...evidence.map((e) => e.interpretation.eventId)];
     const uniqueEventIds = [...new Set(eventIds)];
 
-    // 4. Determine outcome based on best match
-    if (patternsWithSimilarity.length > 0) {
-        const bestMatch = patternsWithSimilarity[0];
+    // 4. Filter candidates by similarity threshold
+    const candidatePatterns = patternsWithSimilarity
+        .filter(p => p.similarity >= CANDIDATE_SIMILARITY_THRESHOLD)
+        .slice(0, MAX_CANDIDATE_PATTERNS);
 
-        // ≥ 0.75: REINFORCE (no LLM call)
-        if (bestMatch.similarity >= REINFORCE_THRESHOLD) {
-            await reinforcePattern(bestMatch.id, uniqueEventIds);
-            console.log(`[PatternDetection] REINFORCED_PATTERN ${bestMatch.id} (similarity=${bestMatch.similarity.toFixed(3)})`);
-            return {
-                success: true,
-                outcome: PatternOutcome.REINFORCED_PATTERN,
-                patternId: bestMatch.id,
-                patternsCreated: 0,
-                patternsReinforced: 1,
-                patternsEvolved: 0,
-                clustersFound: 1,
-            };
-        }
+    // 5. ALWAYS consult LLM for pattern decision (even with high similarity)
+    // Embeddings find candidates; LLM decides semantic relevance
+    // CRITICAL: Pass RAW event content, not the interpretation (which may be biased toward baseline)
+    console.log(`[PatternDetection] Found ${candidatePatterns.length} candidate patterns, consulting LLM`);
+    console.log(`[PatternDetection] Raw event: "${rawEventContent}"`);
 
-        // ≥ 0.60: EVOLVE (LLM re-synthesizes)
-        if (bestMatch.similarity >= EVOLVE_THRESHOLD) {
-            // FALLBACK 2: Insufficient evidence for evolution → reinforce instead
-            if (evidence.length < 2) {
-                await reinforcePattern(bestMatch.id, uniqueEventIds);
-                console.log(`[PatternDetection] REINFORCED_PATTERN ${bestMatch.id} (insufficient evidence for evolution)`);
-                return {
-                    success: true,
-                    outcome: PatternOutcome.REINFORCED_PATTERN,
-                    patternId: bestMatch.id,
-                    patternsCreated: 0,
-                    patternsReinforced: 1,
-                    patternsEvolved: 0,
-                    clustersFound: 1,
-                };
-            }
+    // Get recent events for detective work (last 5 events, excluding current)
+    const recentEventsForDetective = evidence
+        .slice(0, 5)
+        .map(e => ({
+            content: e.interpretation.content.substring(0, 300),
+            createdAt: e.interpretation.createdAt.toISOString(),
+        }));
 
-            const newPatternId = await evolvePattern(userId, bestMatch.id, bestMatch.description, evidence, uniqueEventIds);
-            console.log(`[PatternDetection] EVOLVED_PATTERN ${bestMatch.id} → ${newPatternId} (similarity=${bestMatch.similarity.toFixed(3)})`);
-            return {
-                success: true,
-                outcome: PatternOutcome.EVOLVED_PATTERN,
-                patternId: newPatternId,
-                patternsCreated: 0,
-                patternsReinforced: 0,
-                patternsEvolved: 1,
-                clustersFound: 1,
-            };
-        }
+    const llmDecision = await askLLMAboutPattern(
+        userId,
+        rawEventContent,
+        trigger.content,
+        candidatePatterns,
+        recentEventsForDetective
+    );
+
+    console.log(`[PatternDetection] LLM decision: ${llmDecision.action} - ${llmDecision.reasoning}`);
+
+    // Handle LLM decisions
+    if (llmDecision.action === 'reinforce' && llmDecision.patternId) {
+        await reinforcePattern(llmDecision.patternId, uniqueEventIds);
+        console.log(`[PatternDetection] REINFORCED_PATTERN ${llmDecision.patternId}`);
+        return {
+            success: true,
+            outcome: PatternOutcome.REINFORCED_PATTERN,
+            patternId: llmDecision.patternId,
+            patternsCreated: 0,
+            patternsReinforced: 1,
+            patternsEvolved: 0,
+            clustersFound: candidatePatterns.length,
+        };
     }
 
-    // < 0.60 or no patterns: CREATE NEW
-    // FALLBACK 3: Insufficient evidence → create singleton pattern
+    if (llmDecision.action === 'create' && llmDecision.description && llmDecision.description !== null) {
+        const patternId = await createPatternFromLLMDecision(userId, llmDecision.description, uniqueEventIds);
+        console.log(`[PatternDetection] CREATED_NEW_PATTERN ${patternId}`);
+        return {
+            success: true,
+            outcome: PatternOutcome.CREATED_NEW_PATTERN,
+            patternId,
+            patternsCreated: 1,
+            patternsReinforced: 0,
+            patternsEvolved: 0,
+            clustersFound: candidatePatterns.length,
+        };
+    }
+
+    // Fallback: If we reach here, create a new pattern from the trigger
+    // This ensures every event contributes to pattern understanding
+    console.log(`[PatternDetection] Fallback: creating pattern from trigger content`);
+    const fallbackPatternId = await createPatternFromLLMDecision(
+        userId,
+        `## EMERGING PATTERN\n\n## OBSERVATION\n${trigger.content}\n\n## INTERPRETATION\nEmerging pattern based on recent observation.`,
+        uniqueEventIds
+    );
+    return {
+        success: true,
+        outcome: PatternOutcome.CREATED_NEW_PATTERN,
+        patternId: fallbackPatternId,
+        patternsCreated: 1,
+        patternsReinforced: 0,
+        patternsEvolved: 0,
+        clustersFound: candidatePatterns.length,
+    };
+
+    // No existing patterns: CREATE NEW
+    // FALLBACK: Insufficient evidence → create singleton pattern
     if (evidence.length < 2) {
         const patternId = await createSingletonPatternFromInterpretation(userId, trigger, triggerEventId);
-        console.log(`[PatternDetection] CREATED_NEW_PATTERN ${patternId} (singleton - insufficient evidence)`);
+        console.log(`[PatternDetection] CREATED_NEW_PATTERN ${patternId} (singleton - no existing patterns)`);
         return {
             success: true,
             outcome: PatternOutcome.CREATED_NEW_PATTERN,
@@ -542,116 +578,173 @@ async function getUserContext(userId: string): Promise<{ userName: string; userB
 }
 
 /**
- * Evolves an existing pattern by archiving it and creating a new evolved version.
- * The old pattern is marked as SUPERSEDED for audit trail.
+ * Asks the LLM whether a new observation should reinforce an existing pattern
+ * or create a genuinely new pattern.
+ *
+ * Core Principle: Embeddings find candidates, LLM verifies semantic relevance.
+ * High similarity score ≠ semantic relevance. "YouTube" ≠ "Dietary Discipline".
+ *
+ * CRITICAL: We pass BOTH the raw event content AND the interpretation.
+ * The LLM should match based on the RAW EVENT, not the interpretation
+ * (which may be biased toward the user's baseline).
+ *
+ * If no existing pattern is ACTUALLY relevant to this event, LLM must CREATE
+ * a new pattern that properly captures what this event represents.
  */
-async function evolvePattern(
+async function askLLMAboutPattern(
     userId: string,
-    oldPatternId: string,
-    oldDescription: string,
-    evidence: ScoredInterpretation[],
-    eventIds: string[]
-): Promise<string> {
-    // Fetch user context for personalization
+    rawEventContent: string,
+    interpretationContent: string,
+    existingPatterns: PatternWithSimilarity[],
+    recentEvents: Array<{ content: string; createdAt: string }> = []
+): Promise<{ action: 'reinforce' | 'create'; patternId?: string; description?: string; reasoning: string }> {
     const { userName, userBaseline } = await getUserContext(userId);
 
-    // Build LLM input for evolution
-    const evidenceSummary = evidence.map((e) => ({
-        content: e.interpretation.content,
-        createdAt: e.interpretation.createdAt.toISOString(),
-        isFromExistingPattern: !!e.fromPatternId,
+    const patternsContext = existingPatterns.map((p, i) => ({
+        index: i + 1,
+        id: p.id,
+        description: p.description,
+        similarity: p.similarity.toFixed(3),
     }));
 
+    // CRITICAL: Structure the message to emphasize the raw event
+    // The interpretation is context but the RAW EVENT is what matters for pattern matching
     const userMessage = JSON.stringify({
         userName,
         userBaseline,
-        mode: 'EVOLVE',
-        existingPattern: oldDescription,
-        eventCount: evidence.length,
-        interpretations: evidenceSummary,
+        // The ACTUAL event - this is what should be matched to patterns
+        rawEvent: rawEventContent,
+        // The interpretation provides context but may be biased
+        interpretation: interpretationContent,
+        // For backward compatibility, but LLM should focus on rawEvent
+        newObservation: rawEventContent,
+        existingPatterns: patternsContext,
+        // Recent events for detective work - what happened BEFORE this event?
+        recentEvents: recentEvents,
     });
 
-    // Call LLM for pattern evolution
-    const { modelConfig: evolveConfig, systemPrompt: evolvePrompt } = PATTERN_EVOLUTION_PROMPT;
+    const { modelConfig, systemPrompt } = PATTERN_DECISION_PROMPT;
+
+    // Use OpenAI structured outputs to enforce schema - description MUST be a string
+    // Note: strict mode requires ALL properties in 'required' array
+    const patternDecisionJsonSchema = {
+        name: 'pattern_decision',
+        strict: true,
+        schema: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['reinforce', 'create'] },
+                patternId: { type: ['string', 'null'], description: 'Required if action=reinforce' },
+                description: { type: ['string', 'null'], description: 'Required if action=create. MUST be a markdown string, NOT an object.' },
+                reasoning: { type: 'string' },
+            },
+            required: ['action', 'patternId', 'description', 'reasoning'],
+            additionalProperties: false,
+        },
+    };
+
     const completion = await openai.chat.completions.create({
-        model: evolveConfig.model,
+        model: modelConfig.model,
         messages: [
-            { role: 'system', content: evolvePrompt },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage },
         ],
-        temperature: evolveConfig.temperature,
-        response_format: { type: evolveConfig.responseFormat ?? 'json_object' },
+        temperature: modelConfig.temperature,
+        max_tokens: modelConfig.maxTokens,
+        response_format: { type: 'json_schema', json_schema: patternDecisionJsonSchema },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
     if (!rawResponse) {
-        throw new PatternDetectionError('LLM returned empty response for pattern evolution');
+        // Fallback: create new pattern based on the observation
+        return {
+            action: 'create',
+            description: `## EMERGING PATTERN\n\n## OBSERVATION\n${rawEventContent}\n\n## INTERPRETATION\nEmerging pattern based on recent observation. Created due to LLM empty response.`,
+            reasoning: 'LLM returned empty response, creating new pattern from observation',
+        };
     }
 
     let parsed: unknown;
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
-        throw new PatternDetectionError('LLM returned invalid JSON for evolved pattern', e);
+        return {
+            action: 'create',
+            description: `## EMERGING PATTERN\n\n## OBSERVATION\n${rawEventContent}\n\n## INTERPRETATION\nEmerging pattern based on recent observation. Created due to LLM parse error.`,
+            reasoning: 'LLM returned invalid JSON, creating new pattern from observation',
+        };
     }
 
-    const validated = PatternOutputSchema.safeParse(parsed);
+    const validated = PatternDecisionSchema.safeParse(parsed);
     if (!validated.success) {
-        throw new PatternDetectionError(
-            `Evolved pattern validation failed: ${validated.error.message}`
-        );
+        return {
+            action: 'create',
+            description: `## EMERGING PATTERN\n\n## OBSERVATION\n${rawEventContent}\n\n## INTERPRETATION\nEmerging pattern based on recent observation. Created due to validation error.`,
+            reasoning: `Validation failed: ${validated.error.message}, creating new pattern from observation`,
+        };
     }
 
-    const newDescription = validated.data.pattern;
-    const embeddingResult = await embedText({ text: newDescription });
+    // Convert null to undefined for consistency with function signature
+    const { action, patternId, description, reasoning } = validated.data;
+    return {
+        action,
+        patternId: patternId ?? undefined,
+        description: description ?? undefined,
+        reasoning,
+    };
+}
 
-    // Transaction: archive old pattern, create new one
-    const newPatternId = await prisma.$transaction(async (tx) => {
-        // Archive old pattern
-        await tx.pattern.update({
-            where: { id: oldPatternId },
-            data: { status: 'SUPERSEDED' },
-        });
+/**
+ * Creates a new pattern from LLM-generated description.
+ * Used when LLM decides the observation is genuinely new.
+ */
+async function createPatternFromLLMDecision(
+    userId: string,
+    description: string,
+    eventIds: string[]
+): Promise<string> {
+    const embeddingResult = await embedText({ text: description });
 
-        // Create new evolved pattern
-        const created = await tx.pattern.create({
+    const patternId = await prisma.$transaction(async (tx) => {
+        const pattern = await tx.pattern.create({
             data: {
                 userId,
-                description: newDescription,
+                description,
                 status: 'ACTIVE',
             },
             select: { id: true },
         });
 
-        // Update with embedding
         const embeddingStr = `[${embeddingResult.embedding.join(',')}]`;
         await tx.$executeRawUnsafe(
             `UPDATE "Pattern" SET embedding = $1::vector WHERE id = $2`,
             embeddingStr,
-            created.id
+            pattern.id
         );
 
-        // Create PatternEvents for new pattern
         await tx.patternEvent.createMany({
             data: eventIds.map((eventId) => ({
-                patternId: created.id,
+                patternId: pattern.id,
                 eventId,
             })),
             skipDuplicates: true,
         });
 
-        return created.id;
+        return pattern.id;
     });
 
-    return newPatternId;
+    return patternId;
 }
 
 async function reinforcePattern(patternId: string, eventIds: string[]): Promise<void> {
     await prisma.$transaction(async (tx) => {
-        // Update lastReinforcedAt
+        // Update lastReinforcedAt and increment reinforcementCount
         await tx.pattern.update({
             where: { id: patternId },
-            data: { lastReinforcedAt: new Date() },
+            data: {
+                lastReinforcedAt: new Date(),
+                reinforcementCount: { increment: 1 },
+            },
         });
 
         // Add new PatternEvents (ignore duplicates)

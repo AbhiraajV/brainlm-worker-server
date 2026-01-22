@@ -65,11 +65,11 @@ export const InsightItemSchema = z.object({
         .max(2000, 'Explanation must not exceed 2000 characters')
         .describe('Detailed reasoning and evidence for this insight'),
 
-    confidence: z.nativeEnum(ConfidenceLevel).describe('Confidence level based on evidence strength'),
+    confidence: z.string().transform((val) => val.toUpperCase()).pipe(z.nativeEnum(ConfidenceLevel)).describe('Confidence level based on evidence strength'),
 
-    status: z.nativeEnum(InsightStatus).describe('Current status of the insight'),
+    status: z.string().transform((val) => val.toUpperCase()).pipe(z.nativeEnum(InsightStatus)).describe('Current status of the insight'),
 
-    category: z.nativeEnum(InsightCategory).describe('Primary category of the insight'),
+    category: z.string().transform((val) => val.toUpperCase()).pipe(z.nativeEnum(InsightCategory)).describe('Primary category of the insight'),
 
     temporalScope: z
         .string()
@@ -80,9 +80,9 @@ export const InsightItemSchema = z.object({
 
     evidenceRefs: z
         .array(EvidenceRefSchema)
-        .min(1, 'At least one evidence reference required')
         .max(10, 'Maximum 10 evidence references')
-        .describe('References to supporting evidence'),
+        .optional()
+        .describe('References to supporting evidence - auto-populated from trigger context'),
 
     derivedFromQuestion: z
         .string()
@@ -96,6 +96,12 @@ export const InsightItemSchema = z.object({
         .nullable()
         .optional()
         .describe('ID of older insight this supersedes, if any'),
+
+    quantitativeProjection: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Pre-calculated quantitative projection from currentEvent.quantitativeProjection'),
 });
 
 export type InsightItem = z.infer<typeof InsightItemSchema>;
@@ -106,7 +112,7 @@ export type InsightItem = z.infer<typeof InsightItemSchema>;
 
 export const QuestionExploredSchema = z.object({
     question: z.string().min(10).max(300),
-    category: z.nativeEnum(InsightCategory),
+    category: z.string().transform((val) => val.toUpperCase()).pipe(z.nativeEnum(InsightCategory)),
     answerable: z.boolean(),
     reasonIfUnanswerable: z.string().max(200).nullable().optional(),
 });
@@ -126,8 +132,9 @@ export const InsightOutputSchema = z.object({
 
     insights: z
         .array(InsightItemSchema)
-        .max(10, 'Maximum 10 insights per generation')
-        .describe('Generated insights (only for answerable questions)'),
+        .min(1, 'Must generate at least 1 insight per analysis')
+        .max(3, 'Maximum 3 insights per generation to ensure quality over quantity')
+        .describe('Generated insights (1-3 per analysis). At least one insight required, even if acknowledging existing coverage.'),
 
     processingNotes: z
         .string()

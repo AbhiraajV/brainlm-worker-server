@@ -27,7 +27,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: InsightRetrievalConfig = {
     maxExistingInsights: 15,
     patternSimilarityThreshold: 0.5,
     interpretationSimilarityThreshold: 0.4,
-    insightSimilarityThreshold: 0.7,
+    insightSimilarityThreshold: 0.5,
     recentSupersededDays: 30,
 };
 
@@ -82,8 +82,21 @@ export interface DeterministicFacts {
     eventFrequencyTrend: 'increasing' | 'stable' | 'decreasing' | 'insufficient_data';
 }
 
+export interface TriggerEvent {
+    id: string;
+    content: string;
+    occurredAt: Date;
+}
+
+export interface TriggerInterpretation {
+    id: string;
+    content: string;
+}
+
 export interface InsightDataContext {
     trigger: TriggerContext;
+    triggerEvent: TriggerEvent | null;
+    triggerInterpretation: TriggerInterpretation | null;
     patterns: PatternWithEmbedding[];
     interpretations: InterpretationWithEmbedding[];
     existingInsights: ExistingInsight[];
@@ -547,7 +560,41 @@ export async function retrieveInsightContext(
 ): Promise<InsightDataContext> {
     console.log(`[InsightRetrieval] Starting context retrieval for user ${userId}`);
 
-    // Run all retrievals in parallel
+    // Fetch the CURRENT event and its interpretation (the trigger)
+    let triggerEvent: TriggerEvent | null = null;
+    let triggerInterpretation: TriggerInterpretation | null = null;
+
+    if (trigger.eventId) {
+        const event = await prisma.event.findUnique({
+            where: { id: trigger.eventId },
+            select: { id: true, content: true, occurredAt: true },
+        });
+        if (event) {
+            triggerEvent = {
+                id: event.id,
+                content: event.content,
+                occurredAt: event.occurredAt,
+            };
+        }
+
+        const interpretation = await prisma.interpretation.findFirst({
+            where: { eventId: trigger.eventId },
+            select: { id: true, content: true },
+        });
+        if (interpretation) {
+            triggerInterpretation = {
+                id: interpretation.id,
+                content: interpretation.content,
+            };
+        }
+    }
+
+    console.log(
+        `[InsightRetrieval] Trigger event: ${triggerEvent ? 'found' : 'not found'}, ` +
+        `interpretation: ${triggerInterpretation ? 'found' : 'not found'}`
+    );
+
+    // Run all other retrievals in parallel
     const [patterns, interpretations, existingInsights, facts] = await Promise.all([
         retrievePatterns(userId, targetEmbedding, config),
         retrieveInterpretations(userId, targetEmbedding, config),
@@ -568,6 +615,8 @@ export async function retrieveInsightContext(
 
     return {
         trigger,
+        triggerEvent,
+        triggerInterpretation,
         patterns,
         interpretations,
         existingInsights,
