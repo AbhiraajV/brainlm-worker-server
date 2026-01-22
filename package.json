@@ -16,7 +16,10 @@
     "test:chain": "ts-node src/tests/integration/worker-chain.test.ts",
     "test:scheduler": "ts-node src/tests/integration/scheduler.test.ts",
     "test:e2e": "ts-node src/tests/e2e/full-flow.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prod:build": "prisma generate && tsc",
+    "prod:start": "NODE_ENV=production node dist/index.js",
+    "prod": "npm run prod:build && npm run prod:start"
   },
   "dependencies": {
     "date-fns": "^4.1.0",
