@@ -731,35 +731,26 @@ async function createPatternFromLLMDecision(
         });
 
         return pattern.id;
-    });
+    }, { timeout: 15000 });
 
     return patternId;
 }
 
 async function reinforcePattern(patternId: string, eventIds: string[]): Promise<void> {
-    await prisma.$transaction(async (tx) => {
-        // Update lastReinforcedAt and increment reinforcementCount
-        await tx.pattern.update({
-            where: { id: patternId },
-            data: {
-                lastReinforcedAt: new Date(),
-                reinforcementCount: { increment: 1 },
-            },
-        });
+    // Update pattern (single query) - no transaction needed
+    await prisma.pattern.update({
+        where: { id: patternId },
+        data: {
+            lastReinforcedAt: new Date(),
+            reinforcementCount: { increment: 1 },
+        },
+    });
 
-        // Add new PatternEvents (ignore duplicates)
-        for (const eventId of eventIds) {
-            await tx.patternEvent.upsert({
-                where: {
-                    patternId_eventId: { patternId, eventId },
-                },
-                create: {
-                    patternId,
-                    eventId,
-                },
-                update: {},
-            });
-        }
+    // Batch insert with skipDuplicates (single query)
+    // This replaces 25+ individual upserts with one createMany call
+    await prisma.patternEvent.createMany({
+        data: eventIds.map((eventId) => ({ patternId, eventId })),
+        skipDuplicates: true,
     });
 }
 
@@ -855,7 +846,7 @@ async function createPatternFromEvidence(
         });
 
         return pattern.id;
-    });
+    }, { timeout: 15000 });
 
     return patternId;
 }

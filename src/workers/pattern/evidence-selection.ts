@@ -85,6 +85,7 @@ export async function selectRepresentativeEvidence(
         WHERE "userId" = ${userId}
             AND embedding IS NOT NULL
         ORDER BY "createdAt" DESC
+        LIMIT 200
     `;
 
     if (allInterpretations.length === 0) {
