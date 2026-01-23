@@ -14,7 +14,7 @@ import { formatUOMSuggestionMessage, getSystemPrompt } from './prompt';
 // ============================================================================
 
 const MODEL_CONFIG = {
-  model: 'gpt-4o',
+  model: 'gpt-4o-mini',
   temperature: 0.2, // Low temperature for consistent, reliable suggestions
   maxTokens: 1000,
 };

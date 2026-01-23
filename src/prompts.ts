@@ -47,7 +47,7 @@ export interface PromptConfig {
 
   /** Recommended model configuration */
   modelConfig: {
-    model: 'gpt-4o' | 'gpt-4o-mini';
+    model: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-4.1-mini';
     temperature: number;
     maxTokens?: number;
     responseFormat?: 'json_object' | 'text';
@@ -246,7 +246,7 @@ export const PATTERN_SYNTHESIS_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4o-mini',
     temperature: 0.4,
     responseFormat: 'json_object',
   },
@@ -647,7 +647,7 @@ export const PATTERN_DECISION_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4o-mini',
     temperature: 0.2,
     maxTokens: 1500,
     responseFormat: 'json_object',
@@ -871,7 +871,7 @@ export const INSIGHT_GENERATION_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4o-mini',
     temperature: 0.3,
     maxTokens: 4000,
     responseFormat: 'json_object',
@@ -1329,7 +1329,7 @@ export const DAILY_REVIEW_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4.1-mini',
     temperature: 0.3,
     maxTokens: 4000,
     responseFormat: 'json_object',
@@ -1451,7 +1451,7 @@ export const WEEKLY_REVIEW_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4.1-mini',
     temperature: 0.3,
     maxTokens: 4000,
     responseFormat: 'json_object',
@@ -1589,7 +1589,7 @@ export const MONTHLY_REVIEW_PROMPT: PromptConfig = {
   },
 
   modelConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-4.1-mini',
     temperature: 0.3,
     maxTokens: 4000,
     responseFormat: 'json_object',
@@ -2203,6 +2203,6 @@ export function listPromptIds(): string[] {
 /**
  * Gets all prompts for a specific model.
  */
-export function getPromptsForModel(model: 'gpt-4o' | 'gpt-4o-mini'): PromptConfig[] {
+export function getPromptsForModel(model: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-4.1-mini'): PromptConfig[] {
   return Object.values(ALL_PROMPTS).filter(p => p.modelConfig.model === model);
 }
