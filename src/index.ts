@@ -450,8 +450,21 @@ app.post('/reviews/generate-all', requireAuth, async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    startBackgroundJobs();
+// API layer disabled - server runs as worker-only process
+// To re-enable APIs, uncomment the app.listen block below
+//
+// const PORT = process.env.PORT || 3000;
+// app.listen(PORT, () => {
+//     console.log(`Server running on http://localhost:${PORT}`);
+//     startBackgroundJobs();
+// });
+
+// Start worker + cron only (no HTTP server)
+startBackgroundJobs();
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+    const { stopBackgroundJobs } = await import('./jobs');
+    await stopBackgroundJobs();
+    process.exit(0);
 });
