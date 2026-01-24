@@ -107,6 +107,7 @@ async function setupTestUser(): Promise<void> {
 
   const user = await prisma.user.create({
     data: {
+      clerkUserId: `test_clerk_${Date.now()}`,
       email: TEST_EMAIL,
       name: 'E2E Test User',
       timezone: 'America/New_York',

@@ -175,6 +175,7 @@ async function testUserWithPastDueTime(): Promise<void> {
   // Create test user with past due time
   const user = await prisma.user.create({
     data: {
+      clerkUserId: `test_clerk_${Date.now()}`,
       email: TEST_EMAIL,
       name: 'Scheduler Test User',
       timezone: 'America/New_York',
