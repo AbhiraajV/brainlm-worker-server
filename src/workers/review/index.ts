@@ -2,7 +2,6 @@
 export {
     generateReview,
     generateAllReviewsForDate,
-    ReviewGenerationError,
 } from './generate-review';
 
 // Schema exports

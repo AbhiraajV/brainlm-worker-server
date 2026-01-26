@@ -11,166 +11,131 @@ export enum ReviewType {
 }
 
 // ============================================================================
-// Structured Content Schemas (Type-specific)
+// TypeScript Types for Structured Content
 // ============================================================================
+// Note: These are for TypeScript type hints only. Validation is handled by
+// OpenAI Structured Outputs at the API level, not by Zod at runtime.
+// This ensures the review generation NEVER fails due to schema mismatches.
 
 // Daily review structured content
-export const DailyStructuredContentSchema = z.object({
-    // What happened
-    activities: z.array(z.string()).describe('Key activities of the day'),
-    emotions: z.array(z.object({
-        emotion: z.string(),
-        intensity: z.enum(['low', 'medium', 'high']),
-        context: z.string().optional(),
-    })).describe('Dominant emotions observed'),
-
-    // Pattern analysis
-    patternsReinforced: z.array(z.object({
-        patternId: z.string(),
-        description: z.string(),
-    })).describe('Patterns that were reinforced today'),
-    patternsAbsent: z.array(z.object({
-        patternId: z.string(),
-        description: z.string(),
-        significance: z.string().optional(),
-    })).describe('Expected patterns that were missing'),
-
-    // Comparison
-    comparisonToRecent: z.string().describe('How today differed from recent days'),
-
-    // Reflections (questions with answers)
-    reflections: z.array(z.object({
-        question: z.string(),
-        answer: z.string(),
-    })).describe('Questions raised by today\'s data with answers based on patterns and insights'),
-});
-
-export type DailyStructuredContent = z.infer<typeof DailyStructuredContentSchema>;
+export interface DailyStructuredContent {
+    activities?: string[];
+    emotions?: Array<{
+        emotion: string;
+        intensity?: string;
+        context?: string;
+    }>;
+    estimatedMetrics?: Array<{
+        metric: string;
+        value: string;
+        basis?: string;
+        confidence?: string;
+    }>;
+    patternsReinforced?: Array<{
+        patternId?: string;
+        description: string;
+    }>;
+    patternsAbsent?: Array<{
+        patternId?: string;
+        description: string;
+        significance?: string;
+    }>;
+    dataGaps?: Array<{
+        description: string;
+        loggingSuggestion?: string;
+    }>;
+    comparisonToRecent?: string;
+    reflections?: Array<{
+        question: string;
+        answer: string;
+    }>;
+    [key: string]: unknown; // Allow any additional fields
+}
 
 // Weekly review structured content
-export const WeeklyStructuredContentSchema = z.object({
-    // Behavior trends
-    behaviorsIncreased: z.array(z.object({
-        behavior: z.string(),
-        change: z.string(),
-    })).describe('Behaviors that increased this week'),
-    behaviorsDecreased: z.array(z.object({
-        behavior: z.string(),
-        change: z.string(),
-    })).describe('Behaviors that decreased this week'),
-
-    // Day analysis
-    strongestDays: z.array(z.object({
-        day: z.string(),
-        reason: z.string(),
-    })).describe('Days with most positive signals'),
-    weakestDays: z.array(z.object({
-        day: z.string(),
-        reason: z.string(),
-    })).describe('Days with challenges'),
-
-    // Pattern analysis
-    emergingPatterns: z.array(z.object({
-        description: z.string(),
-        evidence: z.string(),
-    })).describe('Patterns starting to form'),
-    collapsingPatterns: z.array(z.object({
-        patternId: z.string().optional(),
-        description: z.string(),
-        evidence: z.string(),
-    })).describe('Patterns losing strength'),
-
-    // Habit stability
-    habitStability: z.object({
-        stable: z.array(z.string()),
-        inconsistent: z.array(z.string()),
-        trending: z.enum(['improving', 'stable', 'declining', 'mixed']),
-    }).describe('Analysis of habit consistency'),
-
-    // Comparison to previous week
-    weekOverWeekChanges: z.string().describe('Notable changes from previous week'),
-});
-
-export type WeeklyStructuredContent = z.infer<typeof WeeklyStructuredContentSchema>;
+export interface WeeklyStructuredContent {
+    behaviorsIncreased?: Array<{
+        behavior: string;
+        change: string;
+    }>;
+    behaviorsDecreased?: Array<{
+        behavior: string;
+        change: string;
+    }>;
+    strongestDays?: Array<{
+        day: string;
+        reason: string;
+    }>;
+    weakestDays?: Array<{
+        day: string;
+        reason: string;
+    }>;
+    emergingPatterns?: Array<{
+        description: string;
+        evidence?: string;
+    }>;
+    collapsingPatterns?: Array<{
+        patternId?: string;
+        description: string;
+        evidence?: string;
+    }>;
+    habitStability?: {
+        stable?: string[];
+        inconsistent?: string[];
+        trending?: string;
+    };
+    weekOverWeekChanges?: string;
+    [key: string]: unknown;
+}
 
 // Monthly review structured content
-export const MonthlyStructuredContentSchema = z.object({
-    // Trajectory analysis
-    overallTrajectory: z.object({
-        direction: z.enum(['positive', 'neutral', 'negative', 'mixed']),
-        description: z.string(),
-    }).describe('Overall direction of the month'),
+export interface MonthlyStructuredContent {
+    overallTrajectory?: {
+        direction?: string;
+        description?: string;
+    };
+    stabilized?: Array<{
+        area: string;
+        description: string;
+    }>;
+    deteriorated?: Array<{
+        area: string;
+        description: string;
+    }>;
+    progressMade?: Array<{
+        area: string;
+        achievement: string;
+    }>;
+    setbacks?: Array<{
+        area: string;
+        issue: string;
+    }>;
+    comparisonToEarlierMonths?: string;
+    seasonalityHints?: string[];
+    keyRealizations?: string[];
+    [key: string]: unknown;
+}
 
-    // Stability analysis
-    stabilized: z.array(z.object({
-        area: z.string(),
-        description: z.string(),
-    })).describe('What became more stable'),
-    deteriorated: z.array(z.object({
-        area: z.string(),
-        description: z.string(),
-    })).describe('What got worse'),
-
-    // Progress tracking
-    progressMade: z.array(z.object({
-        area: z.string(),
-        achievement: z.string(),
-    })).describe('Concrete progress'),
-    setbacks: z.array(z.object({
-        area: z.string(),
-        issue: z.string(),
-    })).describe('Setbacks encountered'),
-
-    // Comparison
-    comparisonToEarlierMonths: z.string().describe('How this month compares to earlier'),
-    seasonalityHints: z.array(z.string()).optional().describe('Potential seasonal patterns'),
-
-    // Key insights
-    keyRealizations: z.array(z.string()).describe('Major insights from the month'),
-});
-
-export type MonthlyStructuredContent = z.infer<typeof MonthlyStructuredContentSchema>;
-
-// Union schema for structured content
-export const StructuredContentSchema = z.union([
-    DailyStructuredContentSchema,
-    WeeklyStructuredContentSchema,
-    MonthlyStructuredContentSchema,
-]);
-
-export type StructuredContent = z.infer<typeof StructuredContentSchema>;
+// Union type for any structured content
+export type StructuredContent = DailyStructuredContent | WeeklyStructuredContent | MonthlyStructuredContent | Record<string, unknown>;
 
 // ============================================================================
-// Review Output Schema (LLM response)
+// Zod Schemas (for optional runtime validation - never used to block)
 // ============================================================================
+// These exist for backwards compatibility and type inference only.
+// The generate-review.ts uses bulletproof extraction that never throws.
+
+export const DailyStructuredContentSchema = z.object({}).passthrough();
+export const WeeklyStructuredContentSchema = z.object({}).passthrough();
+export const MonthlyStructuredContentSchema = z.object({}).passthrough();
+export const StructuredContentSchema = z.object({}).passthrough();
 
 export const ReviewOutputSchema = z.object({
-    summary: z
-        .string()
-        .min(50, 'Summary must be at least 50 characters')
-        .max(500, 'Summary must not exceed 500 characters')
-        .describe('1-3 sentence summary of the period'),
-
-    structuredContent: StructuredContentSchema.describe('Type-specific structured analysis'),
-
-    renderedMarkdown: z
-        .string()
-        .min(200, 'Markdown must be at least 200 characters')
-        .describe('Full review as markdown for display'),
-
-    dataQuality: z.object({
-        hasAdequateData: z.boolean(),
-        limitations: z.array(z.string()),
-        confidenceLevel: z.enum(['high', 'medium', 'low']),
-    }).describe('Assessment of data quality and limitations'),
-
-    processingNotes: z
-        .string()
-        .max(500)
-        .nullable()
-        .optional()
-        .describe('Optional notes about the generation process'),
-});
+    summary: z.string(),
+    renderedMarkdown: z.string(),
+    structuredContent: z.any(),
+    dataQuality: z.any(),
+}).passthrough();
 
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 

@@ -16,48 +16,51 @@ export type GenerateTomorrowPlanInput = z.infer<typeof GenerateTomorrowPlanInput
 // Output Schema (LLM Response)
 // ============================================================================
 
+// Using flexible strings instead of strict enums - the LLM can use any reasonable value
+// and we don't fail on minor variations. The JSON schema enforces structure, not values.
+
 export const FocusAreaSchema = z.object({
-  area: z.string().min(5).max(100),
-  reasoning: z.string().min(20).max(500),
-  patternRef: z.string().optional(),
-  insightRef: z.string().optional(),
-  confidence: z.enum(['HIGH', 'MEDIUM', 'EMERGING']),
+  area: z.string(),
+  reasoning: z.string(),
+  patternRef: z.string().nullable().optional(),
+  insightRef: z.string().nullable().optional(),
+  confidence: z.string(), // e.g., "HIGH", "MEDIUM", "EMERGING" - but any string works
 });
 
 export const SessionSchema = z.object({
-  timeSlot: z.string().min(3).max(50), // e.g., "Morning (6-9am)", "Evening"
-  activity: z.string().min(5).max(200),
-  sessionType: z.string().min(2).max(30), // e.g., "gym", "diet", "work", "reflection", "social"
-  intent: z.string().min(10).max(200), // What this session is for
-  reasoning: z.string().min(20).max(500),
-  patternRef: z.string().optional(),
-  optional: z.boolean().default(false),
+  timeSlot: z.string(),
+  activity: z.string(),
+  sessionType: z.string(),
+  intent: z.string(),
+  reasoning: z.string(),
+  patternRef: z.string().nullable().optional(),
+  optional: z.boolean(),
 });
 
 export const WarningSchema = z.object({
-  warning: z.string().min(10).max(300),
-  patternId: z.string().optional(),
-  insightId: z.string().optional(),
-  confidence: z.enum(['HIGH', 'MEDIUM', 'EMERGING']),
+  warning: z.string(),
+  patternId: z.string().nullable().optional(),
+  insightId: z.string().nullable().optional(),
+  confidence: z.string(),
 });
 
 export const CTASchema = z.object({
-  action: z.string().min(5).max(200),
-  ctaType: z.enum(['TRACK', 'NOTICE', 'REFLECT']), // TRACK=log this, NOTICE=watch for this, REFLECT=think about this
-  priority: z.enum(['HIGH', 'MEDIUM', 'LOW']),
-  reasoning: z.string().min(20).max(300),
-  patternRef: z.string().optional(),
+  action: z.string(),
+  ctaType: z.string(), // e.g., "TRACK", "NOTICE", "REFLECT" - but any string works
+  priority: z.string(), // e.g., "HIGH", "MEDIUM", "LOW" - but any string works
+  reasoning: z.string(),
+  patternRef: z.string().nullable().optional(),
 });
 
 export const TomorrowPlanOutputSchema = z.object({
-  focusAreas: z.array(FocusAreaSchema).min(1).max(3),
-  sessions: z.array(SessionSchema).min(1).max(6),
-  warnings: z.array(WarningSchema).max(3),
-  ctas: z.array(CTASchema).min(1).max(3),
+  focusAreas: z.array(FocusAreaSchema),
+  sessions: z.array(SessionSchema),
+  warnings: z.array(WarningSchema),
+  ctas: z.array(CTASchema),
   baselineStale: z.boolean(),
-  baselineStaleDays: z.number().optional(),
-  baselineStaleReason: z.string().min(50).max(200).optional(), // Why staleness matters (e.g., "Recent patterns differ from baseline")
-  renderedMarkdown: z.string().min(100).max(5000),
+  baselineStaleDays: z.number().nullable().optional(),
+  baselineStaleReason: z.string().nullable().optional(),
+  renderedMarkdown: z.string(),
 });
 
 export type TomorrowPlanOutput = z.infer<typeof TomorrowPlanOutputSchema>;

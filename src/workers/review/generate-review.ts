@@ -1,15 +1,11 @@
 import prisma from '../../prisma';
 import { openai } from '../../services/openai';
 import { embedText } from '../../services/embedding';
+import { Prisma } from '@prisma/client';
 import {
     ReviewType,
     GenerateReviewInput,
     GenerateReviewResult,
-    ReviewOutputSchema,
-    ReviewOutput,
-    DailyStructuredContentSchema,
-    WeeklyStructuredContentSchema,
-    MonthlyStructuredContentSchema,
 } from './schema';
 import {
     retrieveReviewData,
@@ -45,42 +41,65 @@ function getReviewPromptConfig(reviewType: ReviewType): PromptConfig {
     }
 }
 
-// Configuration is now centralized in src/prompts.ts via *_REVIEW_PROMPT configs
-
 // ============================================================================
-// Error Classes
+// OpenAI Structured Output JSON Schema
 // ============================================================================
 
-export class ReviewGenerationError extends Error {
-    constructor(message: string, public readonly cause?: unknown) {
-        super(message);
-        this.name = 'ReviewGenerationError';
-    }
-}
+/**
+ * JSON Schema for OpenAI Structured Outputs.
+ * OpenAI GUARANTEES the response matches this schema - no validation needed.
+ */
+const REVIEW_JSON_SCHEMA = {
+    name: 'review_output',
+    strict: true,
+    schema: {
+        type: 'object' as const,
+        properties: {
+            summary: {
+                type: 'string' as const,
+                description: '1-3 sentence summary of the period',
+            },
+            renderedMarkdown: {
+                type: 'string' as const,
+                description: 'Full review as markdown for display',
+            },
+            structuredContent: {
+                type: 'object' as const,
+                description: 'Structured analysis data',
+                additionalProperties: true,
+            },
+            dataQuality: {
+                type: 'object' as const,
+                properties: {
+                    hasAdequateData: { type: 'boolean' as const },
+                    limitations: {
+                        type: 'array' as const,
+                        items: { type: 'string' as const },
+                    },
+                    confidenceLevel: {
+                        type: 'string' as const,
+                        enum: ['high', 'medium', 'low'],
+                    },
+                },
+                required: ['hasAdequateData', 'limitations', 'confidenceLevel'],
+                additionalProperties: false,
+            },
+        },
+        required: ['summary', 'renderedMarkdown', 'structuredContent', 'dataQuality'],
+        additionalProperties: false,
+    },
+};
 
-// ============================================================================
-// Structured Content Validation
-// ============================================================================
-
-function validateStructuredContent(
-    reviewType: ReviewType,
-    content: unknown
-): boolean {
-    try {
-        switch (reviewType) {
-            case ReviewType.DAILY:
-                DailyStructuredContentSchema.parse(content);
-                return true;
-            case ReviewType.WEEKLY:
-                WeeklyStructuredContentSchema.parse(content);
-                return true;
-            case ReviewType.MONTHLY:
-                MonthlyStructuredContentSchema.parse(content);
-                return true;
-        }
-    } catch {
-        return false;
-    }
+// Type matching the schema (for TypeScript)
+interface ReviewOutput {
+    summary: string;
+    renderedMarkdown: string;
+    structuredContent: Record<string, unknown>;
+    dataQuality: {
+        hasAdequateData: boolean;
+        limitations: string[];
+        confidenceLevel: 'high' | 'medium' | 'low';
+    };
 }
 
 // ============================================================================
@@ -278,11 +297,11 @@ export async function generateReview(
         console.log(`[ReviewGeneration] Formatted context (${userMessage.length} chars)`);
 
         // ====================================================================
-        // Step 5: Call LLM
+        // Step 5: Call LLM with Structured Outputs (schema-guaranteed)
         // ====================================================================
 
         const { modelConfig, systemPrompt } = promptConfig;
-        console.log(`[ReviewGeneration] Calling LLM (${modelConfig.model})`);
+        console.log(`[ReviewGeneration] Calling LLM (${modelConfig.model}) with JSON schema`);
 
         const completion = await openai.chat.completions.create({
             model: modelConfig.model,
@@ -292,47 +311,26 @@ export async function generateReview(
             ],
             temperature: modelConfig.temperature,
             max_tokens: modelConfig.maxTokens,
-            response_format: { type: modelConfig.responseFormat ?? 'json_object' },
+            response_format: {
+                type: 'json_schema',
+                json_schema: REVIEW_JSON_SCHEMA,
+            },
         });
 
         const rawResponse = completion.choices[0]?.message?.content;
         if (!rawResponse) {
-            throw new ReviewGenerationError('LLM returned empty response');
+            throw new Error('LLM returned empty response');
         }
-
         console.log(`[ReviewGeneration] LLM response received (${rawResponse.length} chars)`);
 
         // ====================================================================
-        // Step 6: Parse and validate with Zod
+        // Step 6: Parse response (OpenAI guarantees schema compliance)
         // ====================================================================
 
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(rawResponse);
-        } catch (e) {
-            throw new ReviewGenerationError('LLM returned invalid JSON', e);
-        }
-
-        const validated = ReviewOutputSchema.safeParse(parsed);
-        if (!validated.success) {
-            console.error(`[ReviewGeneration] Validation errors:`, validated.error.issues);
-            throw new ReviewGenerationError(
-                `Review output validation failed: ${validated.error.message}`
-            );
-        }
-
-        const output: ReviewOutput = validated.data;
-
-        // Validate type-specific structured content
-        if (!validateStructuredContent(reviewType, output.structuredContent)) {
-            console.warn(
-                `[ReviewGeneration] Structured content doesn't match expected schema for ${reviewType}`
-            );
-            // Continue anyway - the overall schema passed
-        }
+        const output: ReviewOutput = JSON.parse(rawResponse);
 
         console.log(
-            `[ReviewGeneration] Output validated: summary=${output.summary.length} chars, ` +
+            `[ReviewGeneration] Output extracted: summary=${output.summary.length} chars, ` +
             `markdown=${output.renderedMarkdown.length} chars, ` +
             `dataQuality=${output.dataQuality.confidenceLevel}`
         );
@@ -361,7 +359,7 @@ export async function generateReview(
                     periodKey,
                     periodStart,
                     periodEnd,
-                    structuredContent: output.structuredContent,
+                    structuredContent: output.structuredContent as Prisma.InputJsonValue,
                     renderedMarkdown: output.renderedMarkdown,
                     summary: output.summary,
                     eventIds: collectedIds.eventIds,

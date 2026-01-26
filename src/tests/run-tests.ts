@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('🧪 Motif Test Runner');
+  console.log('🧪 Motif. Test Runner');
   console.log(`Running ${testsToRun.length} test suite(s)...`);
 
   let passed = 0;
