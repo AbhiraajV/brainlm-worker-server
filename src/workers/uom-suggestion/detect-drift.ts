@@ -4,7 +4,6 @@ import {
   SuggestUOMUpdateInput,
   SuggestUOMUpdateInputSchema,
   SuggestUOMUpdateResult,
-  UOMSuggestionOutputSchema,
 } from './schema';
 import { retrieveUOMSuggestionContext, checkRecentSimilarSuggestion } from './data-retrieval';
 import { formatUOMSuggestionMessage, getSystemPrompt } from './prompt';
@@ -18,6 +17,58 @@ const MODEL_CONFIG = {
   temperature: 0.2, // Low temperature for consistent, reliable suggestions
   maxTokens: 1000,
 };
+
+// ============================================================================
+// JSON Schema for Structured Output
+// ============================================================================
+
+// OpenAI Structured Output guarantees this schema - no Zod validation needed
+const UOM_SUGGESTION_JSON_SCHEMA = {
+  name: 'uom_suggestion_output',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      shouldSuggest: { type: 'boolean' },
+      skipReason: { type: ['string', 'null'] },
+      suggestion: {
+        type: ['object', 'null'],
+        properties: {
+          content: { type: 'string' },
+          reasoning: { type: 'string' },
+          driftType: { type: 'string', enum: ['ADDITION', 'MODIFICATION', 'REMOVAL'] },
+          confidence: { type: 'string', enum: ['HIGH', 'MEDIUM', 'EMERGING'] },
+          targetSection: { type: ['string', 'null'] },
+          patternRefs: { type: 'array', items: { type: 'string' } },
+          insightRefs: { type: 'array', items: { type: 'string' } },
+          reviewRefs: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['content', 'reasoning', 'driftType', 'confidence', 'patternRefs', 'insightRefs', 'reviewRefs'],
+        additionalProperties: false,
+      },
+      processingNotes: { type: ['string', 'null'] },
+    },
+    required: ['shouldSuggest', 'skipReason', 'suggestion', 'processingNotes'],
+    additionalProperties: false,
+  },
+} as const;
+
+// Type for the parsed output - matches JSON schema exactly
+interface UOMSuggestionOutput {
+  shouldSuggest: boolean;
+  skipReason: string | null;
+  suggestion: {
+    content: string;
+    reasoning: string;
+    driftType: 'ADDITION' | 'MODIFICATION' | 'REMOVAL';
+    confidence: 'HIGH' | 'MEDIUM' | 'EMERGING';
+    targetSection?: string | null;
+    patternRefs: string[];
+    insightRefs: string[];
+    reviewRefs: string[];
+  } | null;
+  processingNotes: string | null;
+}
 
 // ============================================================================
 // Error Class
@@ -95,8 +146,8 @@ export async function suggestUOMUpdate(
     const systemPrompt = getSystemPrompt(context.user.name || 'User');
     const userMessage = formatUOMSuggestionMessage(context);
 
-    // Call OpenAI
-    console.log(`[UOMSuggestion] Calling OpenAI...`);
+    // Call OpenAI with Structured Output - JSON schema guarantees valid response
+    console.log(`[UOMSuggestion] Calling OpenAI with structured output...`);
     const completion = await openai.chat.completions.create({
       model: MODEL_CONFIG.model,
       messages: [
@@ -105,7 +156,10 @@ export async function suggestUOMUpdate(
       ],
       temperature: MODEL_CONFIG.temperature,
       max_tokens: MODEL_CONFIG.maxTokens,
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: UOM_SUGGESTION_JSON_SCHEMA,
+      },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
@@ -116,27 +170,16 @@ export async function suggestUOMUpdate(
       };
     }
 
-    // Parse and validate
-    let parsedResponse: unknown;
+    // Parse LLM output - Structured Output guarantees schema compliance
+    let output: UOMSuggestionOutput;
     try {
-      parsedResponse = JSON.parse(rawResponse);
+      output = JSON.parse(rawResponse);
     } catch (e) {
       return {
         success: false,
         error: `Failed to parse JSON response: ${e instanceof Error ? e.message : 'Unknown error'}`,
       };
     }
-
-    const validated = UOMSuggestionOutputSchema.safeParse(parsedResponse);
-    if (!validated.success) {
-      console.error(`[UOMSuggestion] Validation failed:`, validated.error.issues);
-      return {
-        success: false,
-        error: `Output validation failed: ${validated.error.message}`,
-      };
-    }
-
-    const output = validated.data;
 
     // If LLM decided not to suggest, return success with skip
     if (!output.shouldSuggest || !output.suggestion) {

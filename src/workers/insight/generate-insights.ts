@@ -3,11 +3,8 @@ import { openai } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import {
     TriggerContext,
-    InsightOutputSchema,
     InsightOutput,
     InsightItem,
-    InsightStatus,
-    ConfidenceLevel,
 } from './schema';
 import {
     retrieveInsightContext,
@@ -435,24 +432,14 @@ export async function generateInsights(
         console.log(`[InsightGeneration] LLM response received (${rawResponse.length} chars)`);
 
         // ====================================================================
-        // Step 6: Parse and validate with Zod
+        // Step 6: Parse LLM output - Structured Output guarantees schema compliance
         // ====================================================================
-        let parsed: unknown;
+        let output: InsightOutput;
         try {
-            parsed = JSON.parse(rawResponse);
+            output = JSON.parse(rawResponse);
         } catch (e) {
             throw new InsightGenerationError('LLM returned invalid JSON', e);
         }
-
-        const validated = InsightOutputSchema.safeParse(parsed);
-        if (!validated.success) {
-            console.error(`[InsightGeneration] Validation errors:`, validated.error.issues);
-            throw new InsightGenerationError(
-                `Insight output validation failed: ${validated.error.message}`
-            );
-        }
-
-        const output: InsightOutput = validated.data;
 
         const questionsExplored = output.questionsExplored.length;
         const questionsAnswerable = output.questionsExplored.filter((q) => q.answerable).length;

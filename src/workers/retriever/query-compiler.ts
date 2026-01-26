@@ -1,12 +1,75 @@
 import { openai } from '../../services/openai';
 import {
     CompiledQuery,
-    CompiledQuerySchema,
-    IntentType,
     RetrieverConfig,
 } from './schema';
 import { getQueryCompilationUserPrompt } from './prompt';
 import { QUERY_COMPILATION_PROMPT } from '../../prompts';
+
+// ============================================================================
+// JSON Schema for Structured Output
+// ============================================================================
+
+// OpenAI Structured Output guarantees this schema - no Zod validation needed
+const COMPILED_QUERY_JSON_SCHEMA = {
+    name: 'compiled_query',
+    strict: true,
+    schema: {
+        type: 'object',
+        properties: {
+            intentType: {
+                type: 'string',
+                enum: ['TEMPORAL', 'CAUSAL', 'EVALUATIVE', 'COMPARATIVE', 'EXPLORATORY'],
+                description: 'Classified intent type for retrieval biasing',
+            },
+            queries: {
+                type: 'object',
+                properties: {
+                    Event: {
+                        type: 'object',
+                        properties: {
+                            searchIntent: { type: 'string' },
+                            keywords: { type: 'array', items: { type: 'string' } },
+                        },
+                        required: ['searchIntent', 'keywords'],
+                        additionalProperties: false,
+                    },
+                    Interpretation: {
+                        type: 'object',
+                        properties: {
+                            searchIntent: { type: 'string' },
+                            keywords: { type: 'array', items: { type: 'string' } },
+                        },
+                        required: ['searchIntent', 'keywords'],
+                        additionalProperties: false,
+                    },
+                    Pattern: {
+                        type: 'object',
+                        properties: {
+                            searchIntent: { type: 'string' },
+                            keywords: { type: 'array', items: { type: 'string' } },
+                        },
+                        required: ['searchIntent', 'keywords'],
+                        additionalProperties: false,
+                    },
+                    Insight: {
+                        type: 'object',
+                        properties: {
+                            searchIntent: { type: 'string' },
+                            keywords: { type: 'array', items: { type: 'string' } },
+                        },
+                        required: ['searchIntent', 'keywords'],
+                        additionalProperties: false,
+                    },
+                },
+                required: ['Event', 'Interpretation', 'Pattern', 'Insight'],
+                additionalProperties: false,
+            },
+        },
+        required: ['intentType', 'queries'],
+        additionalProperties: false,
+    },
+} as const;
 
 /**
  * Compiles a user's question into table-specific search intents using an LLM.
@@ -23,10 +86,14 @@ export async function compileSemanticQueries(
 ): Promise<CompiledQuery> {
     console.log(`[Retriever] Compiling semantic queries for: "${question.substring(0, 50)}..."`);
 
+    // Call OpenAI with Structured Output - JSON schema guarantees valid response
     const response = await openai.chat.completions.create({
         model: config.llmModel,
         temperature: config.llmTemperature,
-        response_format: { type: 'json_object' },
+        response_format: {
+            type: 'json_schema',
+            json_schema: COMPILED_QUERY_JSON_SCHEMA,
+        },
         messages: [
             {
                 role: 'system',
@@ -44,7 +111,8 @@ export async function compileSemanticQueries(
         throw new Error('[Retriever] LLM returned empty response for query compilation');
     }
 
-    let parsed: unknown;
+    // Parse LLM output - Structured Output guarantees schema compliance
+    let parsed: CompiledQuery;
     try {
         parsed = JSON.parse(content);
     } catch (e) {
@@ -52,46 +120,6 @@ export async function compileSemanticQueries(
         throw new Error(`[Retriever] LLM returned invalid JSON: ${e}`);
     }
 
-    // Validate with Zod schema
-    const result = CompiledQuerySchema.safeParse(parsed);
-    if (!result.success) {
-        console.error('[Retriever] Schema validation failed:', result.error.issues);
-        console.error('[Retriever] Raw response:', content);
-
-        // Attempt to use fallback with exploratory intent
-        return createFallbackQuery(question);
-    }
-
-    console.log(`[Retriever] Step 1 complete: compiled 4 table queries (intent: ${result.data.intentType})`);
-    return result.data;
-}
-
-/**
- * Creates a fallback query when LLM response is invalid.
- * Uses the original question as the search intent for all tables.
- */
-function createFallbackQuery(question: string): CompiledQuery {
-    console.warn('[Retriever] Using fallback query compilation');
-
-    return {
-        intentType: IntentType.EXPLORATORY,
-        queries: {
-            Event: {
-                searchIntent: `Events related to: ${question}`,
-                keywords: [],
-            },
-            Interpretation: {
-                searchIntent: `Emotional and psychological aspects of: ${question}`,
-                keywords: [],
-            },
-            Pattern: {
-                searchIntent: `Recurring patterns related to: ${question}`,
-                keywords: [],
-            },
-            Insight: {
-                searchIntent: `Insights and conclusions about: ${question}`,
-                keywords: [],
-            },
-        },
-    };
+    console.log(`[Retriever] Step 1 complete: compiled 4 table queries (intent: ${parsed.intentType})`);
+    return parsed;
 }

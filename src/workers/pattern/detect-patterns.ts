@@ -2,7 +2,7 @@ import prisma from '../../prisma';
 import { openai } from '../../services/openai';
 import { embedText, cosineSimilarity } from '../../services/embedding';
 import { PATTERN_SYNTHESIS_PROMPT, PATTERN_DECISION_PROMPT } from '../../prompts';
-import { PatternOutputSchema, PatternOutcome, InterpretationWithEmbedding, PatternDecisionSchema } from './schema';
+import { PatternOutcome, InterpretationWithEmbedding } from './schema';
 import {
     clusterInterpretations,
     findSimilarPatterns,
@@ -15,6 +15,27 @@ import {
     EvidenceSelectionConfig,
     ScoredInterpretation,
 } from './evidence-selection';
+
+// ============================================================================
+// JSON Schema for Structured Output
+// ============================================================================
+
+// OpenAI Structured Output guarantees this schema - no Zod validation needed
+const PATTERN_OUTPUT_JSON_SCHEMA = {
+    name: 'pattern_output',
+    strict: true,
+    schema: {
+        type: 'object',
+        properties: {
+            pattern: {
+                type: 'string',
+                description: 'The pattern description in markdown format',
+            },
+        },
+        required: ['pattern'],
+        additionalProperties: false,
+    },
+} as const;
 
 // ============================================================================
 // Configuration
@@ -664,7 +685,8 @@ async function askLLMAboutPattern(
         };
     }
 
-    let parsed: unknown;
+    // Parse LLM output - Structured Output guarantees schema compliance
+    let parsed: { action: 'reinforce' | 'create'; patternId: string | null; description: string | null; reasoning: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
@@ -675,17 +697,8 @@ async function askLLMAboutPattern(
         };
     }
 
-    const validated = PatternDecisionSchema.safeParse(parsed);
-    if (!validated.success) {
-        return {
-            action: 'create',
-            description: `## EMERGING PATTERN\n\n## OBSERVATION\n${rawEventContent}\n\n## INTERPRETATION\nEmerging pattern based on recent observation. Created due to validation error.`,
-            reasoning: `Validation failed: ${validated.error.message}, creating new pattern from observation`,
-        };
-    }
-
     // Convert null to undefined for consistency with function signature
-    const { action, patternId, description, reasoning } = validated.data;
+    const { action, patternId, description, reasoning } = parsed;
     return {
         action,
         patternId: patternId ?? undefined,
@@ -781,7 +794,8 @@ async function createPatternFromEvidence(
         interpretations: evidenceSummary,
     });
 
-    // Call LLM for pattern synthesis
+    // Call LLM for pattern synthesis with Structured Output
+    // JSON schema guarantees valid response - no Zod validation needed
     const { modelConfig: synthConfig, systemPrompt: synthPrompt } = PATTERN_SYNTHESIS_PROMPT;
     const completion = await openai.chat.completions.create({
         model: synthConfig.model,
@@ -790,7 +804,10 @@ async function createPatternFromEvidence(
             { role: 'user', content: userMessage },
         ],
         temperature: synthConfig.temperature,
-        response_format: { type: synthConfig.responseFormat ?? 'json_object' },
+        response_format: {
+            type: 'json_schema',
+            json_schema: PATTERN_OUTPUT_JSON_SCHEMA,
+        },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
@@ -798,21 +815,15 @@ async function createPatternFromEvidence(
         throw new PatternDetectionError('LLM returned empty response for pattern synthesis');
     }
 
-    let parsed: unknown;
+    // Parse LLM output - Structured Output guarantees schema compliance
+    let parsed: { pattern: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
         throw new PatternDetectionError('LLM returned invalid JSON for pattern', e);
     }
 
-    const validated = PatternOutputSchema.safeParse(parsed);
-    if (!validated.success) {
-        throw new PatternDetectionError(
-            `Pattern validation failed: ${validated.error.message}`
-        );
-    }
-
-    const patternDescription = validated.data.pattern;
+    const patternDescription = parsed.pattern;
 
     // Embed the pattern
     const embeddingResult = await embedText({ text: patternDescription });
@@ -877,7 +888,8 @@ async function createNewPattern(
         interpretations: clusterSummary,
     });
 
-    // Call LLM for pattern synthesis
+    // Call LLM for pattern synthesis with Structured Output
+    // JSON schema guarantees valid response - no Zod validation needed
     const { modelConfig: synthConfig, systemPrompt: synthPrompt } = PATTERN_SYNTHESIS_PROMPT;
     const completion = await openai.chat.completions.create({
         model: synthConfig.model,
@@ -886,7 +898,10 @@ async function createNewPattern(
             { role: 'user', content: userMessage },
         ],
         temperature: synthConfig.temperature,
-        response_format: { type: synthConfig.responseFormat ?? 'json_object' },
+        response_format: {
+            type: 'json_schema',
+            json_schema: PATTERN_OUTPUT_JSON_SCHEMA,
+        },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
@@ -894,21 +909,15 @@ async function createNewPattern(
         throw new PatternDetectionError('LLM returned empty response for pattern synthesis');
     }
 
-    let parsed: unknown;
+    // Parse LLM output - Structured Output guarantees schema compliance
+    let parsed: { pattern: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
         throw new PatternDetectionError('LLM returned invalid JSON for pattern', e);
     }
 
-    const validated = PatternOutputSchema.safeParse(parsed);
-    if (!validated.success) {
-        throw new PatternDetectionError(
-            `Pattern validation failed: ${validated.error.message}`
-        );
-    }
-
-    const patternDescription = validated.data.pattern;
+    const patternDescription = parsed.pattern;
 
     // Embed the pattern
     const embeddingResult = await embedText({ text: patternDescription });

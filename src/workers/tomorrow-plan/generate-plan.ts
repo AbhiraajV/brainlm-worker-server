@@ -5,7 +5,7 @@ import {
   GenerateTomorrowPlanInput,
   GenerateTomorrowPlanInputSchema,
   GenerateTomorrowPlanResult,
-  TomorrowPlanOutputSchema,
+  TomorrowPlanOutput,
 } from './schema';
 import {
   retrieveTomorrowPlanContext,
@@ -22,6 +22,96 @@ const MODEL_CONFIG = {
   temperature: 0.4,
   maxTokens: 2000,
 };
+
+// ============================================================================
+// JSON Schema for Structured Output
+// ============================================================================
+
+// This JSON schema is sent to OpenAI to FORCE valid output structure
+// The LLM CANNOT return invalid data when using structured outputs
+const TOMORROW_PLAN_JSON_SCHEMA = {
+  name: 'tomorrow_plan',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      focusAreas: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            area: { type: 'string' },
+            reasoning: { type: 'string' },
+            patternRef: { type: ['string', 'null'] },
+            insightRef: { type: ['string', 'null'] },
+            confidence: { type: 'string' },
+          },
+          required: ['area', 'reasoning', 'confidence'],
+          additionalProperties: false,
+        },
+      },
+      sessions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            timeSlot: { type: 'string' },
+            activity: { type: 'string' },
+            sessionType: { type: 'string' },
+            intent: { type: 'string' },
+            reasoning: { type: 'string' },
+            patternRef: { type: ['string', 'null'] },
+            optional: { type: 'boolean' },
+          },
+          required: ['timeSlot', 'activity', 'sessionType', 'intent', 'reasoning', 'optional'],
+          additionalProperties: false,
+        },
+      },
+      warnings: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            warning: { type: 'string' },
+            patternId: { type: ['string', 'null'] },
+            insightId: { type: ['string', 'null'] },
+            confidence: { type: 'string' },
+          },
+          required: ['warning', 'confidence'],
+          additionalProperties: false,
+        },
+      },
+      ctas: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            action: { type: 'string' },
+            ctaType: { type: 'string' },
+            priority: { type: 'string' },
+            reasoning: { type: 'string' },
+            patternRef: { type: ['string', 'null'] },
+          },
+          required: ['action', 'ctaType', 'priority', 'reasoning'],
+          additionalProperties: false,
+        },
+      },
+      baselineStale: { type: 'boolean' },
+      baselineStaleDays: { type: ['number', 'null'] },
+      baselineStaleReason: { type: ['string', 'null'] },
+      renderedMarkdown: { type: 'string' },
+    },
+    required: [
+      'focusAreas',
+      'sessions',
+      'warnings',
+      'ctas',
+      'baselineStale',
+      'renderedMarkdown',
+    ],
+    additionalProperties: false,
+  },
+} as const;
 
 // ============================================================================
 // Error Class
@@ -98,8 +188,8 @@ export async function generateTomorrowPlan(
     const systemPrompt = getSystemPrompt(context.user.name || 'User');
     const userMessage = formatTomorrowPlanMessage(context);
 
-    // Call OpenAI
-    console.log(`[TomorrowPlan] Calling OpenAI...`);
+    // Call OpenAI with STRUCTURED OUTPUT - guarantees valid JSON schema
+    console.log(`[TomorrowPlan] Calling OpenAI with structured output...`);
     const completion = await openai.chat.completions.create({
       model: MODEL_CONFIG.model,
       messages: [
@@ -108,7 +198,10 @@ export async function generateTomorrowPlan(
       ],
       temperature: MODEL_CONFIG.temperature,
       max_tokens: MODEL_CONFIG.maxTokens,
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: TOMORROW_PLAN_JSON_SCHEMA,
+      },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
@@ -119,27 +212,16 @@ export async function generateTomorrowPlan(
       };
     }
 
-    // Parse and validate
-    let parsedResponse: unknown;
+    // Parse JSON - Structured Output guarantees schema compliance
+    let output: TomorrowPlanOutput;
     try {
-      parsedResponse = JSON.parse(rawResponse);
+      output = JSON.parse(rawResponse);
     } catch (e) {
       return {
         success: false,
         error: `Failed to parse JSON response: ${e instanceof Error ? e.message : 'Unknown error'}`,
       };
     }
-
-    const validated = TomorrowPlanOutputSchema.safeParse(parsedResponse);
-    if (!validated.success) {
-      console.error(`[TomorrowPlan] Validation failed:`, validated.error.issues);
-      return {
-        success: false,
-        error: `Output validation failed: ${validated.error.message}`,
-      };
-    }
-
-    const output = validated.data;
 
     // Generate embedding for the plan
     const embeddingText = `${output.focusAreas.map(f => f.area).join('. ')}. ${output.renderedMarkdown.substring(0, 500)}`;

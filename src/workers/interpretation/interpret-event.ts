@@ -2,7 +2,27 @@ import prisma from '../../prisma';
 import { openai } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import { INTERPRETATION_PROMPT } from '../../prompts';
-import { InterpretationOutputSchema } from './schema';
+
+// ============================================================================
+// JSON Schema for Structured Output
+// ============================================================================
+
+// OpenAI Structured Output guarantees this schema - no validation needed after
+const INTERPRETATION_JSON_SCHEMA = {
+    name: 'interpretation_output',
+    strict: true,
+    schema: {
+        type: 'object',
+        properties: {
+            interpretation: {
+                type: 'string',
+                description: 'The rich interpretation document in markdown format',
+            },
+        },
+        required: ['interpretation'],
+        additionalProperties: false,
+    },
+} as const;
 
 // ============================================================================
 // Types
@@ -92,7 +112,8 @@ export async function interpretEvent(
         },
     });
 
-    // 4. Call OpenAI for rich interpretation
+    // 4. Call OpenAI for rich interpretation with Structured Output
+    // JSON schema guarantees valid response - no Zod validation needed
     const { modelConfig, systemPrompt } = INTERPRETATION_PROMPT;
     const completion = await openai.chat.completions.create({
         model: modelConfig.model,
@@ -101,7 +122,10 @@ export async function interpretEvent(
             { role: 'user', content: userMessage },
         ],
         temperature: modelConfig.temperature,
-        response_format: { type: modelConfig.responseFormat ?? 'json_object' },
+        response_format: {
+            type: 'json_schema',
+            json_schema: INTERPRETATION_JSON_SCHEMA,
+        },
     });
 
     const rawResponse = completion.choices[0]?.message?.content;
@@ -109,22 +133,15 @@ export async function interpretEvent(
         throw new InterpretationError('LLM returned empty response');
     }
 
-    // 5. Parse and validate LLM output
-    let parsed: unknown;
+    // 5. Parse LLM output - Structured Output guarantees schema compliance
+    let parsed: { interpretation: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
         throw new InterpretationError('LLM returned invalid JSON', e);
     }
 
-    const validated = InterpretationOutputSchema.safeParse(parsed);
-    if (!validated.success) {
-        throw new InterpretationError(
-            `LLM output validation failed: ${validated.error.message}`
-        );
-    }
-
-    const interpretationContent = validated.data.interpretation;
+    const interpretationContent = parsed.interpretation;
 
     // 6. Generate embedding for the interpretation
     const embeddingResult = await embedText({ text: interpretationContent });
