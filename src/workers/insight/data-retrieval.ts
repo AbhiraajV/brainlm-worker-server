@@ -82,10 +82,22 @@ export interface DeterministicFacts {
     eventFrequencyTrend: 'increasing' | 'stable' | 'decreasing' | 'insufficient_data';
 }
 
+export interface DayEventsGrouped {
+    [trackedType: string]: Array<{ id: string; content: string; occurredAt: Date; trackedType: string | null }>;
+}
+
+export interface TrackTypeEvent {
+    id: string;
+    content: string;
+    occurredAt: Date;
+    trackedType: string | null;
+}
+
 export interface TriggerEvent {
     id: string;
     content: string;
     occurredAt: Date;
+    trackedType: string | null;
 }
 
 export interface TriggerInterpretation {
@@ -101,6 +113,8 @@ export interface InsightDataContext {
     interpretations: InterpretationWithEmbedding[];
     existingInsights: ExistingInsight[];
     facts: DeterministicFacts;
+    dayEvents: DayEventsGrouped;
+    trackTypeHistory: TrackTypeEvent[];
 }
 
 // ============================================================================
@@ -539,6 +553,70 @@ async function retrieveExistingInsights(
 }
 
 // ============================================================================
+// Track-Type-Aware Retrieval Functions
+// ============================================================================
+
+/**
+ * Fetches ALL events for the same day, grouped by trackedType.
+ * Provides holistic cross-domain context for insight generation.
+ */
+async function retrieveDayEvents(userId: string, targetDate: Date): Promise<DayEventsGrouped> {
+    const dayStart = new Date(targetDate);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setUTCHours(23, 59, 59, 999);
+
+    const events = await prisma.event.findMany({
+        where: {
+            userId,
+            occurredAt: { gte: dayStart, lte: dayEnd },
+        },
+        select: { id: true, content: true, occurredAt: true, trackedType: true },
+        orderBy: { occurredAt: 'asc' },
+    });
+
+    const grouped: DayEventsGrouped = {};
+    for (const event of events) {
+        const type = event.trackedType || 'GENERAL';
+        if (!grouped[type]) grouped[type] = [];
+        grouped[type].push({
+            id: event.id,
+            content: event.content,
+            occurredAt: event.occurredAt,
+            trackedType: event.trackedType,
+        });
+    }
+
+    return grouped;
+}
+
+/**
+ * Fetches same-track-type events historically for progression analysis.
+ */
+async function retrieveTrackTypeHistory(
+    userId: string,
+    trackedType: string,
+    limit: number = 15
+): Promise<TrackTypeEvent[]> {
+    const events = await prisma.event.findMany({
+        where: {
+            userId,
+            trackedType: trackedType as any,
+        },
+        select: { id: true, content: true, occurredAt: true, trackedType: true },
+        orderBy: { occurredAt: 'desc' },
+        take: limit,
+    });
+
+    return events.map(e => ({
+        id: e.id,
+        content: e.content,
+        occurredAt: e.occurredAt,
+        trackedType: e.trackedType,
+    }));
+}
+
+// ============================================================================
 // Main Retrieval Function
 // ============================================================================
 
@@ -567,13 +645,14 @@ export async function retrieveInsightContext(
     if (trigger.eventId) {
         const event = await prisma.event.findUnique({
             where: { id: trigger.eventId },
-            select: { id: true, content: true, occurredAt: true },
+            select: { id: true, content: true, occurredAt: true, trackedType: true },
         });
         if (event) {
             triggerEvent = {
                 id: event.id,
                 content: event.content,
                 occurredAt: event.occurredAt,
+                trackedType: event.trackedType,
             };
         }
 
@@ -594,18 +673,31 @@ export async function retrieveInsightContext(
         `interpretation: ${triggerInterpretation ? 'found' : 'not found'}`
     );
 
+    // Retrieve day events and track type history for holistic context
+    const dayEventsPromise = triggerEvent
+        ? retrieveDayEvents(userId, triggerEvent.occurredAt)
+        : Promise.resolve({} as DayEventsGrouped);
+
+    const trackTypeHistoryPromise = triggerEvent?.trackedType
+        ? retrieveTrackTypeHistory(userId, triggerEvent.trackedType, 15)
+        : Promise.resolve([] as TrackTypeEvent[]);
+
     // Run all other retrievals in parallel
-    const [patterns, interpretations, existingInsights, facts] = await Promise.all([
+    const [patterns, interpretations, existingInsights, facts, dayEvents, trackTypeHistory] = await Promise.all([
         retrievePatterns(userId, targetEmbedding, config),
         retrieveInterpretations(userId, targetEmbedding, config),
         retrieveExistingInsights(userId, targetEmbedding, config),
         retrieveDeterministicFacts(userId),
+        dayEventsPromise,
+        trackTypeHistoryPromise,
     ]);
 
     console.log(
         `[InsightRetrieval] Retrieved: ${patterns.length} patterns, ` +
         `${interpretations.length} interpretations, ` +
-        `${existingInsights.length} existing insights`
+        `${existingInsights.length} existing insights, ` +
+        `${Object.keys(dayEvents).length} track types today, ` +
+        `${trackTypeHistory.length} track type history events`
     );
     console.log(
         `[InsightRetrieval] Facts: ${facts.totalEvents} events, ` +
@@ -621,5 +713,7 @@ export async function retrieveInsightContext(
         interpretations,
         existingInsights,
         facts,
+        dayEvents,
+        trackTypeHistory,
     };
 }

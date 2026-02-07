@@ -67,7 +67,7 @@ app.get('/me', requireAuth, (req, res) => {
 
 // POST /memory - Create a new event
 app.post('/memory', requireAuth, async (req, res) => {
-    const { content, occurredAt } = req.body;
+    const { content, occurredAt, trackedType, rawJson } = req.body;
 
     // Validate required fields
     if (!content || typeof content !== 'string' || content.trim() === '') {
@@ -91,6 +91,8 @@ app.post('/memory', requireAuth, async (req, res) => {
             userId: req.auth!.user!.id,
             content: content.trim(),
             occurredAt: parsedDate,
+            trackedType: trackedType || undefined,
+            rawJson: rawJson || undefined,
         });
 
         res.status(200).json(result);

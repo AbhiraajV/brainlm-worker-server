@@ -167,6 +167,7 @@ export interface EventWithInterpretation {
     id: string;
     content: string;
     occurredAt: Date;
+    trackedType: string | null;
     interpretation: {
         id: string;
         content: string;
@@ -234,6 +235,9 @@ export interface ReviewDeterministicFacts {
     interpretationCount: number;
     patternsReinforced: number;
     patternsCreated: number;
+
+    // Per-track-type event counts
+    eventsPerTrackType?: Record<string, number>;
 
     // Overall user stats
     totalEvents: number;

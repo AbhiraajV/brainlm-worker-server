@@ -1,10 +1,12 @@
 import prisma from '../prisma';
-import { JobType, JobStatus } from '@prisma/client';
+import { JobType, JobStatus, TrackedType } from '@prisma/client';
 
 export interface CreateEventInput {
   userId: string;
   content: string;
   occurredAt: Date;
+  trackedType?: TrackedType;
+  rawJson?: any;
 }
 
 export interface CreateEventResult {
@@ -27,7 +29,7 @@ export interface CreateEventResult {
  * 3. GENERATE_INSIGHTS → generates insights if pattern created/evolved (chained by handler)
  */
 export async function createEvent(input: CreateEventInput): Promise<CreateEventResult> {
-  const { userId, content, occurredAt } = input;
+  const { userId, content, occurredAt, trackedType, rawJson } = input;
 
   // Use transaction to ensure atomicity - both event and job created together
   const result = await prisma.$transaction(async (tx) => {
@@ -37,6 +39,8 @@ export async function createEvent(input: CreateEventInput): Promise<CreateEventR
         userId,
         content,
         occurredAt,
+        ...(trackedType && { trackedType }),
+        ...(rawJson !== undefined && { rawJson }),
       },
       select: { id: true },
     });

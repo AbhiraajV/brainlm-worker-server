@@ -29,13 +29,27 @@ function formatEvents(events: EventWithInterpretation[]): string {
         return 'No events recorded for this period.';
     }
 
-    return events.map((e) => {
-        const time = e.occurredAt.toISOString();
-        const interpretation = e.interpretation
-            ? `\n   Interpretation: ${e.interpretation.content.substring(0, 500)}${e.interpretation.content.length > 500 ? '...' : ''}`
-            : '';
-        return `- [${time}] ${e.content}${interpretation}`;
-    }).join('\n');
+    // Group events by track type
+    const grouped: Record<string, EventWithInterpretation[]> = {};
+    for (const e of events) {
+        const type = e.trackedType || 'GENERAL';
+        if (!grouped[type]) grouped[type] = [];
+        grouped[type].push(e);
+    }
+
+    const sections: string[] = [];
+    for (const [trackType, trackEvents] of Object.entries(grouped)) {
+        const eventLines = trackEvents.map((e) => {
+            const time = e.occurredAt.toISOString();
+            const interpretation = e.interpretation
+                ? `\n   Interpretation: ${e.interpretation.content.substring(0, 500)}${e.interpretation.content.length > 500 ? '...' : ''}`
+                : '';
+            return `  - [${time}] ${e.content}${interpretation}`;
+        }).join('\n');
+        sections.push(`### ${trackType} (${trackEvents.length} events)\n${eventLines}`);
+    }
+
+    return sections.join('\n\n');
 }
 
 function formatPatterns(patterns: PatternSummary[]): string {
@@ -73,9 +87,16 @@ function formatFacts(facts: ReviewDeterministicFacts): string {
 - Events in period: ${facts.eventCount}
 - Interpretations: ${facts.interpretationCount}
 - Patterns reinforced: ${facts.patternsReinforced}
-- Patterns created: ${facts.patternsCreated}
+- Patterns created: ${facts.patternsCreated}`;
 
-## Overall Context
+    if (facts.eventsPerTrackType && Object.keys(facts.eventsPerTrackType).length > 0) {
+        factsStr += '\n\n## Events Per Track Type';
+        for (const [trackType, count] of Object.entries(facts.eventsPerTrackType)) {
+            factsStr += `\n- ${trackType}: ${count} events`;
+        }
+    }
+
+    factsStr += `\n\n## Overall Context
 - Total events (all time): ${facts.totalEvents}
 - Active patterns: ${facts.totalPatterns}
 - Active insights: ${facts.totalInsights}

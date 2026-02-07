@@ -336,6 +336,8 @@ export async function generateInsights(
             interpretations: context.interpretations,
             existingInsights: context.existingInsights,
             facts: context.facts,
+            dayEvents: context.dayEvents,
+            trackTypeHistory: context.trackTypeHistory,
         });
 
         console.log(`[InsightGeneration] Formatted context (${userMessage.length} chars)`);

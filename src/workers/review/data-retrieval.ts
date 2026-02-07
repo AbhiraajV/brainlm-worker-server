@@ -182,6 +182,7 @@ async function retrieveEventsInPeriod(
         id: e.id,
         content: e.content,
         occurredAt: e.occurredAt,
+        trackedType: e.trackedType || null,
         interpretation: e.interpretation,
     }));
 }
@@ -372,6 +373,23 @@ async function computeDeterministicFacts(
         ? Math.floor((now.getTime() - earliestEvent.occurredAt.getTime()) / (24 * 60 * 60 * 1000))
         : 0;
 
+    // Per-track-type event counts
+    const trackTypeCounts = await prisma.$queryRaw<
+        Array<{ trackedType: string | null; count: bigint }>
+    >`
+        SELECT "trackedType"::text as "trackedType", COUNT(*) as count
+        FROM "Event"
+        WHERE "userId" = ${userId}
+          AND "occurredAt" >= ${periodStart}
+          AND "occurredAt" < ${periodEnd}
+        GROUP BY "trackedType"
+    `;
+
+    const eventsPerTrackType: Record<string, number> = {};
+    for (const row of trackTypeCounts) {
+        eventsPerTrackType[row.trackedType || 'GENERAL'] = Number(row.count);
+    }
+
     // Time distribution for weekly/monthly
     let eventsPerDay: Record<string, number> | undefined;
     let mostActiveDay: string | undefined;
@@ -406,6 +424,7 @@ async function computeDeterministicFacts(
         interpretationCount,
         patternsReinforced,
         patternsCreated,
+        eventsPerTrackType,
         totalEvents,
         totalPatterns,
         totalInsights,

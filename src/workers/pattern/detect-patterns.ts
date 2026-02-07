@@ -169,11 +169,59 @@ export async function detectPatternsForEvent(
     // 1b. Get the RAW event content (not the interpretation which may be biased)
     const triggerEvent = await prisma.event.findUnique({
         where: { id: triggerEventId },
-        select: { content: true, occurredAt: true },
+        select: { content: true, occurredAt: true, trackedType: true },
     });
     const rawEventContent = triggerEvent?.content || trigger.content;
+    const triggerTrackedType = triggerEvent?.trackedType || null;
+    const triggerOccurredAt = triggerEvent?.occurredAt || new Date();
 
-    // 2. Get existing patterns with similarity scores
+    // 2a. Fetch ALL events from the same day (all track types) for holistic context
+    const dayStart = new Date(triggerOccurredAt);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const dayEnd = new Date(triggerOccurredAt);
+    dayEnd.setUTCHours(23, 59, 59, 999);
+
+    const dayEvents = await prisma.event.findMany({
+        where: {
+            userId,
+            occurredAt: { gte: dayStart, lte: dayEnd },
+            id: { not: triggerEventId },
+        },
+        select: { id: true, content: true, occurredAt: true, trackedType: true },
+        orderBy: { occurredAt: 'asc' },
+        take: 20,
+    });
+
+    // 2b. Fetch same-track-type events from last 30 days for progression
+    const thirtyDaysAgo = new Date(triggerOccurredAt);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const trackTypeHistory = triggerTrackedType ? await prisma.event.findMany({
+        where: {
+            userId,
+            trackedType: triggerTrackedType,
+            occurredAt: { gte: thirtyDaysAgo, lt: dayStart },
+        },
+        select: { id: true, content: true, occurredAt: true, trackedType: true },
+        orderBy: { occurredAt: 'desc' },
+        take: 15,
+    }) : [];
+
+    // 2c. Fetch events from 3 days before for causal chain detection
+    const threeDaysBefore = new Date(triggerOccurredAt);
+    threeDaysBefore.setDate(threeDaysBefore.getDate() - 3);
+
+    const precedingEvents = await prisma.event.findMany({
+        where: {
+            userId,
+            occurredAt: { gte: threeDaysBefore, lt: dayStart },
+        },
+        select: { id: true, content: true, occurredAt: true, trackedType: true },
+        orderBy: { occurredAt: 'desc' },
+        take: 15,
+    });
+
+    // 3. Get existing patterns with similarity scores
     const patternsWithSimilarity = await getExistingPatternsWithSimilarity(userId, triggerEmbedding);
 
     // 3. Select representative evidence
@@ -195,28 +243,41 @@ export async function detectPatternsForEvent(
     console.log(`[PatternDetection] Found ${candidatePatterns.length} candidate patterns, consulting LLM`);
     console.log(`[PatternDetection] Raw event: "${rawEventContent}"`);
 
-    // Get recent events for detective work (last 5 events, excluding current)
-    const recentEventsForDetective = evidence
-        .slice(0, 5)
-        .map(e => ({
-            content: e.interpretation.content.substring(0, 300),
-            createdAt: e.interpretation.createdAt.toISOString(),
-        }));
+    // Build holistic context for LLM
+    const dayEventsContext = dayEvents.map(e => ({
+        content: e.content.substring(0, 200),
+        trackedType: e.trackedType || 'GENERAL',
+        occurredAt: e.occurredAt.toISOString(),
+    }));
+
+    const trackTypeHistoryContext = trackTypeHistory.map(e => ({
+        content: e.content.substring(0, 200),
+        occurredAt: e.occurredAt.toISOString(),
+    }));
+
+    const precedingEventsContext = precedingEvents.map(e => ({
+        content: e.content.substring(0, 200),
+        trackedType: e.trackedType || 'GENERAL',
+        occurredAt: e.occurredAt.toISOString(),
+    }));
 
     const llmDecision = await askLLMAboutPattern(
         userId,
         rawEventContent,
         trigger.content,
         candidatePatterns,
-        recentEventsForDetective
+        precedingEventsContext,
+        dayEventsContext,
+        trackTypeHistoryContext,
+        triggerTrackedType
     );
 
     console.log(`[PatternDetection] LLM decision: ${llmDecision.action} - ${llmDecision.reasoning}`);
 
     // Handle LLM decisions
     if (llmDecision.action === 'reinforce' && llmDecision.patternId) {
-        await reinforcePattern(llmDecision.patternId, uniqueEventIds);
-        console.log(`[PatternDetection] REINFORCED_PATTERN ${llmDecision.patternId}`);
+        await reinforcePattern(llmDecision.patternId, uniqueEventIds, llmDecision.updatedDescription);
+        console.log(`[PatternDetection] REINFORCED_PATTERN ${llmDecision.patternId} (description ${llmDecision.updatedDescription ? 'updated' : 'unchanged'})`);
         return {
             success: true,
             outcome: PatternOutcome.REINFORCED_PATTERN,
@@ -617,8 +678,11 @@ async function askLLMAboutPattern(
     rawEventContent: string,
     interpretationContent: string,
     existingPatterns: PatternWithSimilarity[],
-    recentEvents: Array<{ content: string; createdAt: string }> = []
-): Promise<{ action: 'reinforce' | 'create'; patternId?: string; description?: string; reasoning: string }> {
+    precedingEvents: Array<{ content: string; trackedType: string; occurredAt: string }> = [],
+    dayEvents: Array<{ content: string; trackedType: string; occurredAt: string }> = [],
+    trackTypeHistory: Array<{ content: string; occurredAt: string }> = [],
+    trackedType: string | null = null
+): Promise<{ action: 'reinforce' | 'create'; patternId?: string; description?: string; updatedDescription?: string; reasoning: string }> {
     const { userName, userBaseline } = await getUserContext(userId);
 
     const patternsContext = existingPatterns.map((p, i) => ({
@@ -633,15 +697,16 @@ async function askLLMAboutPattern(
     const userMessage = JSON.stringify({
         userName,
         userBaseline,
-        // The ACTUAL event - this is what should be matched to patterns
         rawEvent: rawEventContent,
-        // The interpretation provides context but may be biased
+        trackedType: trackedType || 'GENERAL',
         interpretation: interpretationContent,
-        // For backward compatibility, but LLM should focus on rawEvent
-        newObservation: rawEventContent,
         existingPatterns: patternsContext,
-        // Recent events for detective work - what happened BEFORE this event?
-        recentEvents: recentEvents,
+        // All events from the same day (cross-domain context)
+        dayEvents,
+        // Events from last 3 days (causal chain detection)
+        precedingEvents,
+        // Same track type events from last 30 days (progression)
+        trackTypeHistory,
     });
 
     const { modelConfig, systemPrompt } = PATTERN_DECISION_PROMPT;
@@ -656,10 +721,11 @@ async function askLLMAboutPattern(
             properties: {
                 action: { type: 'string', enum: ['reinforce', 'create'] },
                 patternId: { type: ['string', 'null'], description: 'Required if action=reinforce' },
-                description: { type: ['string', 'null'], description: 'Required if action=create. MUST be a markdown string, NOT an object.' },
+                description: { type: ['string', 'null'], description: 'Required if action=create. MUST be a markdown string.' },
+                updatedDescription: { type: ['string', 'null'], description: 'Required if action=reinforce. Updated pattern with new instance added.' },
                 reasoning: { type: 'string' },
             },
-            required: ['action', 'patternId', 'description', 'reasoning'],
+            required: ['action', 'patternId', 'description', 'updatedDescription', 'reasoning'],
             additionalProperties: false,
         },
     };
@@ -686,7 +752,7 @@ async function askLLMAboutPattern(
     }
 
     // Parse LLM output - Structured Output guarantees schema compliance
-    let parsed: { action: 'reinforce' | 'create'; patternId: string | null; description: string | null; reasoning: string };
+    let parsed: { action: 'reinforce' | 'create'; patternId: string | null; description: string | null; updatedDescription: string | null; reasoning: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
@@ -697,12 +763,12 @@ async function askLLMAboutPattern(
         };
     }
 
-    // Convert null to undefined for consistency with function signature
-    const { action, patternId, description, reasoning } = parsed;
+    const { action, patternId, description, updatedDescription, reasoning } = parsed;
     return {
         action,
         patternId: patternId ?? undefined,
         description: description ?? undefined,
+        updatedDescription: updatedDescription ?? undefined,
         reasoning,
     };
 }
@@ -749,18 +815,36 @@ async function createPatternFromLLMDecision(
     return patternId;
 }
 
-async function reinforcePattern(patternId: string, eventIds: string[]): Promise<void> {
-    // Update pattern (single query) - no transaction needed
-    await prisma.pattern.update({
-        where: { id: patternId },
-        data: {
-            lastReinforcedAt: new Date(),
-            reinforcementCount: { increment: 1 },
-        },
-    });
+async function reinforcePattern(patternId: string, eventIds: string[], updatedDescription?: string): Promise<void> {
+    // Update pattern with optional new description and re-embedding
+    if (updatedDescription) {
+        const embeddingResult = await embedText({ text: updatedDescription });
+        const embeddingStr = `[${embeddingResult.embedding.join(',')}]`;
 
-    // Batch insert with skipDuplicates (single query)
-    // This replaces 25+ individual upserts with one createMany call
+        await prisma.pattern.update({
+            where: { id: patternId },
+            data: {
+                description: updatedDescription,
+                lastReinforcedAt: new Date(),
+                reinforcementCount: { increment: 1 },
+            },
+        });
+
+        await prisma.$executeRawUnsafe(
+            `UPDATE "Pattern" SET embedding = $1::vector WHERE id = $2`,
+            embeddingStr,
+            patternId
+        );
+    } else {
+        await prisma.pattern.update({
+            where: { id: patternId },
+            data: {
+                lastReinforcedAt: new Date(),
+                reinforcementCount: { increment: 1 },
+            },
+        });
+    }
+
     await prisma.patternEvent.createMany({
         data: eventIds.map((eventId) => ({ patternId, eventId })),
         skipDuplicates: true,

@@ -86,7 +86,7 @@ function generateQuantitativeHint(eventContent: string | null): string | null {
 export function formatInsightUserMessage(context: {
     userName: string;
     userBaseline: string;
-    triggerEvent: { id: string; content: string; occurredAt: Date } | null;
+    triggerEvent: { id: string; content: string; occurredAt: Date; trackedType?: string | null } | null;
     triggerInterpretation: { id: string; content: string } | null;
     trigger: {
         type: string;
@@ -135,6 +135,8 @@ export function formatInsightUserMessage(context: {
         mostActiveDay: string | null;
         eventFrequencyTrend: string;
     };
+    dayEvents?: { [trackedType: string]: Array<{ id: string; content: string; occurredAt: Date; trackedType: string | null }> };
+    trackTypeHistory?: Array<{ id: string; content: string; occurredAt: Date; trackedType: string | null }>;
 }): string {
     // Format patterns for LLM
     const patternsForLLM = context.patterns.map((p) => ({
@@ -174,6 +176,23 @@ export function formatInsightUserMessage(context: {
     // Generate quantitative projection hint if event has numbers
     const quantitativeHint = generateQuantitativeHint(context.triggerEvent?.content || null);
 
+    // Format day events grouped by track type
+    const dayEventsForLLM: Record<string, Array<{ content: string; occurredAt: string }>> = {};
+    if (context.dayEvents) {
+        for (const [trackType, events] of Object.entries(context.dayEvents)) {
+            dayEventsForLLM[trackType] = events.map(e => ({
+                content: e.content.length > 300 ? e.content.substring(0, 300) + '...' : e.content,
+                occurredAt: e.occurredAt.toISOString(),
+            }));
+        }
+    }
+
+    // Format track type history chronologically
+    const trackTypeHistoryForLLM = (context.trackTypeHistory || []).map(e => ({
+        content: e.content.length > 300 ? e.content.substring(0, 300) + '...' : e.content,
+        occurredAt: e.occurredAt.toISOString(),
+    }));
+
     // Build EVENT-CENTRIC message structure
     // The currentEvent comes FIRST so the LLM focuses on it
     return JSON.stringify({
@@ -183,8 +202,8 @@ export function formatInsightUserMessage(context: {
             interpretation: context.triggerInterpretation?.content || null,
             occurredAt: context.triggerEvent?.occurredAt?.toISOString() || null,
             eventId: context.triggerEvent?.id || null,
+            trackedType: context.triggerEvent?.trackedType || 'GENERAL',
             triggerType: context.trigger.type,
-            // Pre-calculated projection - LLM should include this in insight explanation
             quantitativeProjection: quantitativeHint,
         },
 
@@ -193,6 +212,12 @@ export function formatInsightUserMessage(context: {
             name: context.userName,
             baseline: context.userBaseline,
         },
+
+        // ALL EVENTS FROM TODAY - grouped by track type for cross-domain analysis
+        dayEvents: dayEventsForLLM,
+
+        // SAME TRACK TYPE HISTORY - for progression comparison
+        trackTypeHistory: trackTypeHistoryForLLM,
 
         // BACKGROUND - For understanding, not for regenerating
         background: {

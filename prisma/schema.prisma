@@ -91,6 +91,14 @@ enum UOMDriftType {
   REMOVAL
 }
 
+enum TrackedType {
+  GYM
+  DIET
+  ADDICTION
+  GENERAL
+  HABIT
+}
+
 // ============================================================================
 // CORE TABLES (5 tables - removed Tag, EventTag, EventContext, Recommendation)
 // ============================================================================
@@ -134,8 +142,10 @@ model Event {
   content    String                       @db.Text
   audioRef   String?
   occurredAt DateTime
-  createdAt  DateTime                     @default(now())
-  embedding  Unsupported("vector(1536)")? // Optional: embed raw content
+  createdAt   DateTime                     @default(now())
+  embedding   Unsupported("vector(1536)")? // Optional: embed raw content
+  rawJson     Json?                        // Structured data (WorkoutLog, DietLog, etc.)
+  trackedType TrackedType?                 // For filtering queries
 
   // Relationships (removed: tags, contextAsSource, contextAsTarget)
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -148,6 +158,8 @@ model Event {
   @@index([occurredAt])
   @@index([userId, occurredAt])
   @@index([userId, createdAt])
+  @@index([userId, trackedType])
+  @@index([userId, trackedType, occurredAt])
 }
 
 // Table 3: Interpretation - Rich understanding of events (one per event)

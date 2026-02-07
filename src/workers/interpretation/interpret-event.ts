@@ -89,6 +89,8 @@ export async function interpretEvent(
             userId: true,
             content: true,
             occurredAt: true,
+            trackedType: true,
+            rawJson: true,
             user: {
                 select: {
                     name: true,
@@ -109,6 +111,8 @@ export async function interpretEvent(
         event: {
             content: event.content,
             occurredAt: event.occurredAt.toISOString(),
+            trackedType: event.trackedType || 'GENERAL',
+            rawJson: event.rawJson || null,
         },
     });
 
