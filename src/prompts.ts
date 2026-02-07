@@ -636,7 +636,7 @@ Return a JSON object with:
 export const DAILY_REVIEW_PROMPT: PromptConfig = {
   id: 'review-daily',
   name: 'Daily Review Generation',
-  description: 'Creates a depth-scaled review for a single day, supporting quantitative and behavioral domains equally',
+  description: 'Creates a deeply analytical review for a single day with root-cause analysis, cross-track cause chains, pattern validation, and evidence-based recovery suggestions',
 
   inputSources: [
     'Events with interpretations for the day (EventWithInterpretation[])',
@@ -651,7 +651,7 @@ export const DAILY_REVIEW_PROMPT: PromptConfig = {
   expectedOutput: {
     format: 'json',
     schema: 'ReviewOutputSchema with DailyStructuredContent (src/workers/review/schema.ts)',
-    description: 'JSON with summary, structuredContent (activities, quantitativeMetrics, emotions, patternsReinforced, patternsAbsent, comparisonToRecent, dataGaps, reflections), renderedMarkdown, dataQuality',
+    description: 'JSON with summary, structuredContent (trackAnalysis, crossTrackCauseChain, patternsReinforced, patternsContradicted, patternsAbsent, failures, wins, dataGaps), renderedMarkdown, dataQuality',
   },
 
   modelConfig: {
@@ -667,64 +667,102 @@ export const DAILY_REVIEW_PROMPT: PromptConfig = {
 
 ## DAILY REVIEW
 
-You are reviewing a SINGLE DAY. Events are grouped by track type.
+You are reviewing a SINGLE DAY. Your job is to be a genius analyst of what happened, why it happened, and what the user should learn from it.
 
-### Structure Your Review:
+### ANALYSIS FRAMEWORK
 
-**For EACH active track type today:**
-- What happened in this dimension?
-- How does it compare to recent sessions of the same type?
-- On track vs goals? (reference baseline)
+**Step 1: Per-Track Deep Dive**
+For EACH active track type today, analyze:
+1. **What happened** — exactly what the user did/logged
+2. **What was expected** — based on the UOM baseline goals and routines for this day
+3. **Gap analysis** — what was missed vs achieved, with specific numbers
+4. **Why** — root-cause analysis using cross-track effects and patterns:
+   - Did poor sleep cause a weak gym session?
+   - Did stress lead to diet deviation?
+   - Did a trigger event cause an addiction slip?
+   - Did skipping one habit cascade into skipping others?
+5. **Historical comparison** — compare to prior daily reviews this week. On days when the user succeeded at this, what was different? On days they failed, what was the common thread?
+6. **What worked** — call out specifically what went RIGHT and why, so the user can repeat it
 
-**Cross-Track Connections:**
-- How did today's dimensions interact?
-- Did one track type affect another?
+**Step 2: Cross-Track Cause Chain**
+Map the causal chain across track types:
+- "You slept 5 hours → gym session was cut short → you stress-ate in the evening → missed your protein target"
+- "You meal-prepped last night → hit all macros today → had energy for a strong workout → logged a PR"
+Be specific and definitive. If you see the chain, state it. Don't hedge with "may have."
 
-**Patterns:**
-- Which were reinforced today? (explain HOW, don't just list)
-- Which were expected but absent?
+**Step 3: Pattern Validation**
+For each pattern provided:
+- Was it REINFORCED today? Explain exactly how with today's evidence
+- Was it CONTRADICTED today? Say so directly — "This pattern says X but today you did Y"
+- Was it EXPECTED but absent? Note what should have triggered it
 
-**Data Gaps:**
-- Frame as Motif logging suggestions: "Log X in Motif to track Y"
+For each insight provided:
+- Does today's data support or weaken it?
+- Any new connections visible today?
+
+**Step 4: Failure Analysis & Recovery Evidence**
+For anything that went wrong today:
+- What specifically failed (be blunt: "You skipped gym", "You broke your diet at dinner")
+- The likely cause based on patterns and today's cross-track data
+- **What worked before in similar situations** — reference specific prior reviews or patterns where the user recovered or succeeded despite similar circumstances
+- For addiction events: identify the trigger, find historical instances of the same trigger, and note what the user did on days they successfully resisted
+
+**Step 5: Data Gaps**
+Frame as Motif logging suggestions. Be specific: "Log your sleep time in Motif — your gym performance seems to correlate with sleep, but we can't confirm without the data."
 
 ### Structured Content Schema:
 {
-  "activities": string[],
-  "estimatedMetrics": [{ "metric": string, "value": string, "basis": string, "confidence": string }],
-  "emotions": [{ "emotion": string, "intensity": string, "context": string }],
-  "patternsReinforced": [{ "patternId": string, "description": string }],
-  "patternsAbsent": [{ "patternId": string, "description": string, "significance": string }],
-  "dataGaps": [{ "description": string, "loggingSuggestion": string }],
-  "comparisonToRecent": string,
-  "reflections": [{ "question": string, "answer": string }]
+  "trackAnalysis": [{
+    "trackType": string,
+    "whatHappened": string,
+    "whatWasExpected": string,
+    "gapAnalysis": string,
+    "rootCause": string,
+    "historicalComparison": string,
+    "onTrack": boolean
+  }],
+  "crossTrackCauseChain": string,
+  "patternsReinforced": [{ "patternId": string, "how": string }],
+  "patternsContradicted": [{ "patternId": string, "how": string }],
+  "patternsAbsent": [{ "patternId": string, "expectedTrigger": string }],
+  "failures": [{
+    "what": string,
+    "trackType": string,
+    "likelyCause": string,
+    "whatWorkedBefore": string
+  }],
+  "wins": [{
+    "what": string,
+    "trackType": string,
+    "why": string
+  }],
+  "dataGaps": [{ "description": string, "loggingSuggestion": string }]
 }
 
 ### Markdown Format:
 # Daily Review: [Date]
 
 ## Summary
-[1-3 sentences -- direct, specific]
+[1-3 sentences — direct, definitive assessment of the day]
 
-## [Track Type 1] (e.g., GYM)
-[What happened, metrics, comparison to recent, goal alignment]
+## [Track Type]: What Happened
+[For each active track type: what happened, what was expected, gap analysis, root cause, historical comparison]
 
-## [Track Type 2] (e.g., DIET)
-[What happened, metrics, comparison to recent, goal alignment]
+## The Cause Chain
+[Cross-track connections — how one thing led to another today]
 
-## Cross-Track Connections
-[How dimensions interacted today]
+## What Went Right
+[Specific wins with evidence for why they worked]
 
-## Patterns
-### Reinforced
-- [Pattern + how today relates]
-### Absent
-- [Expected but missing]
+## What Went Wrong & Why
+[Specific failures with root cause analysis]
+[For each failure: what worked before in similar situations]
 
-## Comparison to Recent Days
-[Specific metrics and differences]
+## Pattern Check
+[Which patterns held, which broke, which were absent]
 
 ## Log This in Motif
-[Specific logging suggestions to fill data gaps]`,
+[Specific data gap suggestions]`,
 };
 
 export const WEEKLY_REVIEW_PROMPT: PromptConfig = {

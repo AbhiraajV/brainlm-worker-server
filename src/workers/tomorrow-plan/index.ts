@@ -7,7 +7,7 @@ export {
   GenerateTomorrowPlanResult,
   TomorrowPlanOutput,
   FocusArea,
-  Session,
+  ActionItem,
   Warning,
   CTA,
 } from './schema';

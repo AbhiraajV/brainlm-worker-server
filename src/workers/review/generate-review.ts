@@ -64,9 +64,8 @@ const REVIEW_JSON_SCHEMA = {
                 description: 'Full review as markdown for display',
             },
             structuredContent: {
-                type: 'object' as const,
-                description: 'Structured analysis data',
-                additionalProperties: true,
+                type: 'string' as const,
+                description: 'Structured analysis data as a JSON string. Must be valid JSON.',
             },
             dataQuality: {
                 type: 'object' as const,
@@ -94,7 +93,7 @@ const REVIEW_JSON_SCHEMA = {
 interface ReviewOutput {
     summary: string;
     renderedMarkdown: string;
-    structuredContent: Record<string, unknown>;
+    structuredContent: string;
     dataQuality: {
         hasAdequateData: boolean;
         limitations: string[];
@@ -328,6 +327,7 @@ export async function generateReview(
         // ====================================================================
 
         const output: ReviewOutput = JSON.parse(rawResponse);
+        const structuredContent = JSON.parse(output.structuredContent);
 
         console.log(
             `[ReviewGeneration] Output extracted: summary=${output.summary.length} chars, ` +
@@ -359,7 +359,7 @@ export async function generateReview(
                     periodKey,
                     periodStart,
                     periodEnd,
-                    structuredContent: output.structuredContent as Prisma.InputJsonValue,
+                    structuredContent: structuredContent as Prisma.InputJsonValue,
                     renderedMarkdown: output.renderedMarkdown,
                     summary: output.summary,
                     eventIds: collectedIds.eventIds,

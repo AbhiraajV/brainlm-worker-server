@@ -27,14 +27,14 @@ export const FocusAreaSchema = z.object({
   confidence: z.string(), // e.g., "HIGH", "MEDIUM", "EMERGING" - but any string works
 });
 
-export const SessionSchema = z.object({
-  timeSlot: z.string(),
-  activity: z.string(),
-  sessionType: z.string(),
-  intent: z.string(),
+export const ActionItemSchema = z.object({
+  trackType: z.string(),
+  action: z.string(),
   reasoning: z.string(),
+  evidence: z.string(),
   patternRef: z.string().nullable().optional(),
-  optional: z.boolean(),
+  insightRef: z.string().nullable().optional(),
+  priority: z.string(),
 });
 
 export const WarningSchema = z.object({
@@ -54,7 +54,7 @@ export const CTASchema = z.object({
 
 export const TomorrowPlanOutputSchema = z.object({
   focusAreas: z.array(FocusAreaSchema),
-  sessions: z.array(SessionSchema),
+  actionItems: z.array(ActionItemSchema),
   warnings: z.array(WarningSchema),
   ctas: z.array(CTASchema),
   baselineStale: z.boolean(),
@@ -65,7 +65,7 @@ export const TomorrowPlanOutputSchema = z.object({
 
 export type TomorrowPlanOutput = z.infer<typeof TomorrowPlanOutputSchema>;
 export type FocusArea = z.infer<typeof FocusAreaSchema>;
-export type Session = z.infer<typeof SessionSchema>;
+export type ActionItem = z.infer<typeof ActionItemSchema>;
 export type Warning = z.infer<typeof WarningSchema>;
 export type CTA = z.infer<typeof CTASchema>;
 
