@@ -98,6 +98,7 @@ export interface TriggerEvent {
     content: string;
     occurredAt: Date;
     trackedType: string | null;
+    rawJson: any | null;
 }
 
 export interface TriggerInterpretation {
@@ -645,7 +646,7 @@ export async function retrieveInsightContext(
     if (trigger.eventId) {
         const event = await prisma.event.findUnique({
             where: { id: trigger.eventId },
-            select: { id: true, content: true, occurredAt: true, trackedType: true },
+            select: { id: true, content: true, occurredAt: true, trackedType: true, rawJson: true },
         });
         if (event) {
             triggerEvent = {
@@ -653,6 +654,7 @@ export async function retrieveInsightContext(
                 content: event.content,
                 occurredAt: event.occurredAt,
                 trackedType: event.trackedType,
+                rawJson: event.rawJson || null,
             };
         }
 

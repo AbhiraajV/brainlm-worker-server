@@ -84,19 +84,6 @@ export const InsightItemSchema = z.object({
         .optional()
         .describe('References to supporting evidence - auto-populated from trigger context'),
 
-    derivedFromQuestion: z
-        .string()
-        .max(200)
-        .nullable()
-        .optional()
-        .describe('The question this insight answers'),
-
-    supersedesInsightId: z
-        .string()
-        .nullable()
-        .optional()
-        .describe('ID of older insight this supersedes, if any'),
-
     quantitativeProjection: z
         .string()
         .nullable()
@@ -107,29 +94,10 @@ export const InsightItemSchema = z.object({
 export type InsightItem = z.infer<typeof InsightItemSchema>;
 
 // ============================================================================
-// Question Explored Schema
-// ============================================================================
-
-export const QuestionExploredSchema = z.object({
-    question: z.string().min(10).max(300),
-    category: z.string().transform((val) => val.toUpperCase()).pipe(z.nativeEnum(InsightCategory)),
-    answerable: z.boolean(),
-    reasonIfUnanswerable: z.string().max(200).nullable().optional(),
-});
-
-export type QuestionExplored = z.infer<typeof QuestionExploredSchema>;
-
-// ============================================================================
 // Full LLM Output Schema
 // ============================================================================
 
 export const InsightOutputSchema = z.object({
-    questionsExplored: z
-        .array(QuestionExploredSchema)
-        .min(3, 'Must explore at least 3 questions')
-        .max(15, 'Maximum 15 questions')
-        .describe('Questions the LLM explored based on the data'),
-
     insights: z
         .array(InsightItemSchema)
         .min(1, 'Must generate at least 1 insight per analysis')

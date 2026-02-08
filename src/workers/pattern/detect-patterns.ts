@@ -136,12 +136,21 @@ export async function detectPatternsForEvent(
 
         const mostRecent = await getMostRecentActivePattern(userId);
         if (mostRecent) {
-            await reinforcePattern(mostRecent.id, [triggerEventId]);
-            console.log(`[PatternDetection] REINFORCED_PATTERN ${mostRecent.id} (fallback - no interpretation)`);
+            // Fetch existing description for restatement in fallback
+            const existingPattern = await prisma.pattern.findUnique({
+                where: { id: mostRecent.id },
+                select: { description: true },
+            });
+            const newPatternId = await reinforcePattern(
+                mostRecent.id,
+                [triggerEventId],
+                existingPattern?.description || '## Pattern reinforced (fallback — no interpretation available)'
+            );
+            console.log(`[PatternDetection] REINFORCED_PATTERN ${mostRecent.id} → ${newPatternId} (fallback - no interpretation)`);
             return {
                 success: true,
                 outcome: PatternOutcome.REINFORCED_PATTERN,
-                patternId: mostRecent.id,
+                patternId: newPatternId,
                 patternsCreated: 0,
                 patternsReinforced: 1,
                 patternsEvolved: 0,
@@ -243,22 +252,41 @@ export async function detectPatternsForEvent(
     console.log(`[PatternDetection] Found ${candidatePatterns.length} candidate patterns, consulting LLM`);
     console.log(`[PatternDetection] Raw event: "${rawEventContent}"`);
 
+    // 2d. Fetch interpretations for all context events
+    const contextEventIds = [
+        ...dayEvents.map(e => e.id),
+        ...trackTypeHistory.map(e => e.id),
+        ...precedingEvents.map(e => e.id),
+    ];
+    const contextInterpretations = contextEventIds.length > 0
+        ? await prisma.interpretation.findMany({
+              where: { eventId: { in: contextEventIds } },
+              select: { eventId: true, content: true },
+          })
+        : [];
+    const interpretationByEventId = new Map(
+        contextInterpretations.map(i => [i.eventId, i.content])
+    );
+
     // Build holistic context for LLM
     const dayEventsContext = dayEvents.map(e => ({
-        content: e.content.substring(0, 200),
+        content: e.content.substring(0, 500),
         trackedType: e.trackedType || 'GENERAL',
         occurredAt: e.occurredAt.toISOString(),
+        interpretation: interpretationByEventId.get(e.id)?.substring(0, 500) || null,
     }));
 
     const trackTypeHistoryContext = trackTypeHistory.map(e => ({
-        content: e.content.substring(0, 200),
+        content: e.content.substring(0, 500),
         occurredAt: e.occurredAt.toISOString(),
+        interpretation: interpretationByEventId.get(e.id)?.substring(0, 500) || null,
     }));
 
     const precedingEventsContext = precedingEvents.map(e => ({
-        content: e.content.substring(0, 200),
+        content: e.content.substring(0, 500),
         trackedType: e.trackedType || 'GENERAL',
         occurredAt: e.occurredAt.toISOString(),
+        interpretation: interpretationByEventId.get(e.id)?.substring(0, 500) || null,
     }));
 
     const llmDecision = await askLLMAboutPattern(
@@ -276,12 +304,16 @@ export async function detectPatternsForEvent(
 
     // Handle LLM decisions
     if (llmDecision.action === 'reinforce' && llmDecision.patternId) {
-        await reinforcePattern(llmDecision.patternId, uniqueEventIds, llmDecision.updatedDescription);
-        console.log(`[PatternDetection] REINFORCED_PATTERN ${llmDecision.patternId} (description ${llmDecision.updatedDescription ? 'updated' : 'unchanged'})`);
+        const newPatternId = await reinforcePattern(
+            llmDecision.patternId,
+            uniqueEventIds,
+            llmDecision.description!  // Full restated description
+        );
+        console.log(`[PatternDetection] REINFORCED_PATTERN ${llmDecision.patternId} → new entry ${newPatternId}`);
         return {
             success: true,
             outcome: PatternOutcome.REINFORCED_PATTERN,
-            patternId: llmDecision.patternId,
+            patternId: newPatternId,
             patternsCreated: 0,
             patternsReinforced: 1,
             patternsEvolved: 0,
@@ -321,34 +353,6 @@ export async function detectPatternsForEvent(
         clustersFound: candidatePatterns.length,
     };
 
-    // No existing patterns: CREATE NEW
-    // FALLBACK: Insufficient evidence → create singleton pattern
-    if (evidence.length < 2) {
-        const patternId = await createSingletonPatternFromInterpretation(userId, trigger, triggerEventId);
-        console.log(`[PatternDetection] CREATED_NEW_PATTERN ${patternId} (singleton - no existing patterns)`);
-        return {
-            success: true,
-            outcome: PatternOutcome.CREATED_NEW_PATTERN,
-            patternId,
-            patternsCreated: 1,
-            patternsReinforced: 0,
-            patternsEvolved: 0,
-            clustersFound: 0,
-        };
-    }
-
-    // Normal case: create new pattern from evidence via LLM
-    const patternId = await createPatternFromEvidence(userId, evidence, uniqueEventIds);
-    console.log(`[PatternDetection] CREATED_NEW_PATTERN ${patternId}`);
-    return {
-        success: true,
-        outcome: PatternOutcome.CREATED_NEW_PATTERN,
-        patternId,
-        patternsCreated: 1,
-        patternsReinforced: 0,
-        patternsEvolved: 0,
-        clustersFound: 1,
-    };
 }
 
 // ============================================================================
@@ -461,11 +465,19 @@ export async function detectPatterns(
         const eventIds = cluster.interpretations.map((i) => i.eventId);
 
         if (matchingPatternIds.length > 0) {
-            // Reinforce existing pattern
+            // Reinforce existing pattern (batch legacy — use existing description)
             const patternId = matchingPatternIds[0];
-            await reinforcePattern(patternId, eventIds);
+            const existingPattern = await prisma.pattern.findUnique({
+                where: { id: patternId },
+                select: { description: true },
+            });
+            const newId = await reinforcePattern(
+                patternId,
+                eventIds,
+                existingPattern?.description || '## Pattern reinforced (batch mode)'
+            );
             patternsReinforced++;
-            lastPatternId = patternId;
+            lastPatternId = newId;
         } else {
             // Create new pattern
             const newPatternId = await createNewPattern(userId, cluster, eventIds);
@@ -678,11 +690,11 @@ async function askLLMAboutPattern(
     rawEventContent: string,
     interpretationContent: string,
     existingPatterns: PatternWithSimilarity[],
-    precedingEvents: Array<{ content: string; trackedType: string; occurredAt: string }> = [],
-    dayEvents: Array<{ content: string; trackedType: string; occurredAt: string }> = [],
-    trackTypeHistory: Array<{ content: string; occurredAt: string }> = [],
+    precedingEvents: Array<{ content: string; trackedType: string; occurredAt: string; interpretation?: string | null }> = [],
+    dayEvents: Array<{ content: string; trackedType: string; occurredAt: string; interpretation?: string | null }> = [],
+    trackTypeHistory: Array<{ content: string; occurredAt: string; interpretation?: string | null }> = [],
     trackedType: string | null = null
-): Promise<{ action: 'reinforce' | 'create'; patternId?: string; description?: string; updatedDescription?: string; reasoning: string }> {
+): Promise<{ action: 'reinforce' | 'create'; patternId?: string; description?: string; reasoning: string }> {
     const { userName, userBaseline } = await getUserContext(userId);
 
     const patternsContext = existingPatterns.map((p, i) => ({
@@ -721,11 +733,10 @@ async function askLLMAboutPattern(
             properties: {
                 action: { type: 'string', enum: ['reinforce', 'create'] },
                 patternId: { type: ['string', 'null'], description: 'Required if action=reinforce' },
-                description: { type: ['string', 'null'], description: 'Required if action=create. MUST be a markdown string.' },
-                updatedDescription: { type: ['string', 'null'], description: 'Required if action=reinforce. Updated pattern with new instance added.' },
+                description: { type: ['string', 'null'], description: 'FULL pattern markdown. Required for BOTH create AND reinforce.' },
                 reasoning: { type: 'string' },
             },
-            required: ['action', 'patternId', 'description', 'updatedDescription', 'reasoning'],
+            required: ['action', 'patternId', 'description', 'reasoning'],
             additionalProperties: false,
         },
     };
@@ -752,7 +763,7 @@ async function askLLMAboutPattern(
     }
 
     // Parse LLM output - Structured Output guarantees schema compliance
-    let parsed: { action: 'reinforce' | 'create'; patternId: string | null; description: string | null; updatedDescription: string | null; reasoning: string };
+    let parsed: { action: 'reinforce' | 'create'; patternId: string | null; description: string | null; reasoning: string };
     try {
         parsed = JSON.parse(rawResponse);
     } catch (e) {
@@ -763,12 +774,11 @@ async function askLLMAboutPattern(
         };
     }
 
-    const { action, patternId, description, updatedDescription, reasoning } = parsed;
+    const { action, patternId, description, reasoning } = parsed;
     return {
         action,
         patternId: patternId ?? undefined,
         description: description ?? undefined,
-        updatedDescription: updatedDescription ?? undefined,
         reasoning,
     };
 }
@@ -815,40 +825,70 @@ async function createPatternFromLLMDecision(
     return patternId;
 }
 
-async function reinforcePattern(patternId: string, eventIds: string[], updatedDescription?: string): Promise<void> {
-    // Update pattern with optional new description and re-embedding
-    if (updatedDescription) {
-        const embeddingResult = await embedText({ text: updatedDescription });
-        const embeddingStr = `[${embeddingResult.embedding.join(',')}]`;
+async function reinforcePattern(
+    patternId: string,
+    eventIds: string[],
+    newDescription: string  // Always required now — full standalone description
+): Promise<string> {
+    // 1. Get old pattern's event links
+    const oldPatternEvents = await prisma.patternEvent.findMany({
+        where: { patternId },
+        select: { eventId: true },
+    });
+    const allEventIds = [...new Set([
+        ...oldPatternEvents.map(pe => pe.eventId),
+        ...eventIds,
+    ])];
 
-        await prisma.pattern.update({
+    // 2. Embed new description
+    const embeddingResult = await embedText({ text: newDescription });
+    const embeddingStr = `[${embeddingResult.embedding.join(',')}]`;
+
+    // 3. Transaction: create new, supersede old
+    const newPatternId = await prisma.$transaction(async (tx) => {
+        // Get old pattern metadata
+        const oldPattern = await tx.pattern.findUnique({
             where: { id: patternId },
-            data: {
-                description: updatedDescription,
-                lastReinforcedAt: new Date(),
-                reinforcementCount: { increment: 1 },
-            },
+            select: { reinforcementCount: true, userId: true },
         });
 
-        await prisma.$executeRawUnsafe(
+        // Mark old pattern as SUPERSEDED
+        await tx.pattern.update({
+            where: { id: patternId },
+            data: { status: 'SUPERSEDED' },
+        });
+
+        // Create new pattern
+        const newPattern = await tx.pattern.create({
+            data: {
+                userId: oldPattern!.userId,
+                description: newDescription,
+                status: 'ACTIVE',
+                reinforcementCount: (oldPattern!.reinforcementCount || 1) + 1,
+            },
+            select: { id: true },
+        });
+
+        // Set embedding
+        await tx.$executeRawUnsafe(
             `UPDATE "Pattern" SET embedding = $1::vector WHERE id = $2`,
             embeddingStr,
-            patternId
+            newPattern.id
         );
-    } else {
-        await prisma.pattern.update({
-            where: { id: patternId },
-            data: {
-                lastReinforcedAt: new Date(),
-                reinforcementCount: { increment: 1 },
-            },
-        });
-    }
 
-    await prisma.patternEvent.createMany({
-        data: eventIds.map((eventId) => ({ patternId, eventId })),
-        skipDuplicates: true,
-    });
+        // Link all events to new pattern
+        await tx.patternEvent.createMany({
+            data: allEventIds.map(eventId => ({
+                patternId: newPattern.id,
+                eventId,
+            })),
+            skipDuplicates: true,
+        });
+
+        return newPattern.id;
+    }, { timeout: 15000 });
+
+    return newPatternId;
 }
 
 /**

@@ -86,7 +86,7 @@ function generateQuantitativeHint(eventContent: string | null): string | null {
 export function formatInsightUserMessage(context: {
     userName: string;
     userBaseline: string;
-    triggerEvent: { id: string; content: string; occurredAt: Date; trackedType?: string | null } | null;
+    triggerEvent: { id: string; content: string; occurredAt: Date; trackedType?: string | null; rawJson?: any | null } | null;
     triggerInterpretation: { id: string; content: string } | null;
     trigger: {
         type: string;
@@ -181,7 +181,7 @@ export function formatInsightUserMessage(context: {
     if (context.dayEvents) {
         for (const [trackType, events] of Object.entries(context.dayEvents)) {
             dayEventsForLLM[trackType] = events.map(e => ({
-                content: e.content.length > 300 ? e.content.substring(0, 300) + '...' : e.content,
+                content: e.content.length > 600 ? e.content.substring(0, 600) + '...' : e.content,
                 occurredAt: e.occurredAt.toISOString(),
             }));
         }
@@ -189,7 +189,7 @@ export function formatInsightUserMessage(context: {
 
     // Format track type history chronologically
     const trackTypeHistoryForLLM = (context.trackTypeHistory || []).map(e => ({
-        content: e.content.length > 300 ? e.content.substring(0, 300) + '...' : e.content,
+        content: e.content.length > 600 ? e.content.substring(0, 600) + '...' : e.content,
         occurredAt: e.occurredAt.toISOString(),
     }));
 
@@ -199,6 +199,7 @@ export function formatInsightUserMessage(context: {
         // CURRENT EVENT FIRST - This is what the LLM should focus on
         currentEvent: {
             rawContent: context.triggerEvent?.content || null,
+            rawJson: context.triggerEvent?.rawJson || null,
             interpretation: context.triggerInterpretation?.content || null,
             occurredAt: context.triggerEvent?.occurredAt?.toISOString() || null,
             eventId: context.triggerEvent?.id || null,

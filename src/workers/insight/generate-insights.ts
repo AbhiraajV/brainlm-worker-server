@@ -29,8 +29,6 @@ export interface GenerateInsightsResult {
     insightsCreated: number;
     insightsReinforced: number;
     insightsSuperseded: number;
-    questionsExplored: number;
-    questionsAnswerable: number;
     createdInsightIds: string[];
     error?: string;
 }
@@ -155,24 +153,11 @@ async function persistInsights(
 ): Promise<{ created: string[]; reinforced: number; superseded: number }> {
     const createdIds: string[] = [];
     let reinforced = 0;
-    let superseded = 0;
 
     for (const insight of insights) {
         // Generate embedding for the insight
         const embeddingText = `${insight.statement}\n\n${insight.explanation}`;
         const embeddingResult = await embedText({ text: embeddingText });
-
-        // Handle supersession
-        if (insight.supersedesInsightId) {
-            await prisma.insight.update({
-                where: { id: insight.supersedesInsightId },
-                data: {
-                    status: 'SUPERSEDED',
-                    supersededById: '', // Will be updated after creating new insight
-                },
-            });
-            superseded++;
-        }
 
         // Create the insight and junction table records
         const created = await prisma.$transaction(async (tx) => {
@@ -186,7 +171,8 @@ async function persistInsights(
                     status: insight.status,
                     category: insight.category,
                     temporalScope: insight.temporalScope,
-                    supersedes: insight.supersedesInsightId,
+                    // Note: supersession is expressed in the explanation text, not via DB links
+                    // (LLMs hallucinate IDs, so we don't trust supersedesInsightId)
                     triggerType: trigger.type,
                     triggerEventId: trigger.eventId,
                 },
@@ -232,21 +218,13 @@ async function persistInsights(
                 });
             }
 
-            // Update superseded insight with reference to new one
-            if (insight.supersedesInsightId) {
-                await tx.insight.update({
-                    where: { id: insight.supersedesInsightId },
-                    data: { supersededById: newInsight.id },
-                });
-            }
-
             return newInsight;
         });
 
         createdIds.push(created.id);
     }
 
-    return { created: createdIds, reinforced, superseded };
+    return { created: createdIds, reinforced, superseded: 0 };
 }
 
 // ============================================================================
@@ -306,8 +284,6 @@ export async function generateInsights(
                 insightsCreated: 0,
                 insightsReinforced: 0,
                 insightsSuperseded: 0,
-                questionsExplored: 0,
-                questionsAnswerable: 0,
                 createdInsightIds: [],
             };
         }
@@ -355,25 +331,6 @@ export async function generateInsights(
             schema: {
                 type: 'object',
                 properties: {
-                    questionsExplored: {
-                        type: 'array',
-                        minItems: 3,
-                        maxItems: 15,
-                        items: {
-                            type: 'object',
-                            properties: {
-                                question: { type: 'string' },
-                                category: {
-                                    type: 'string',
-                                    enum: ['STRUCTURAL', 'BEHAVIORAL', 'PREFERENCE', 'EMOTIONAL', 'CROSS_DOMAIN', 'PROGRESS', 'META', 'SHALLOW_PATTERNS'],
-                                },
-                                answerable: { type: 'boolean' },
-                                reasonIfUnanswerable: { type: ['string', 'null'] },
-                            },
-                            required: ['question', 'category', 'answerable', 'reasonIfUnanswerable'],
-                            additionalProperties: false,
-                        },
-                    },
                     insights: {
                         type: 'array',
                         minItems: 1,
@@ -396,18 +353,16 @@ export async function generateInsights(
                                     enum: ['STRUCTURAL', 'BEHAVIORAL', 'PREFERENCE', 'EMOTIONAL', 'CROSS_DOMAIN', 'PROGRESS', 'META', 'SHALLOW_PATTERNS'],
                                 },
                                 temporalScope: { type: ['string', 'null'] },
-                                derivedFromQuestion: { type: ['string', 'null'] },
-                                supersedesInsightId: { type: ['string', 'null'] },
                                 // Quantitative projection - LLM MUST fill this from currentEvent.quantitativeProjection
                                 quantitativeProjection: { type: ['string', 'null'] },
                             },
-                            required: ['statement', 'explanation', 'confidence', 'status', 'category', 'temporalScope', 'derivedFromQuestion', 'supersedesInsightId', 'quantitativeProjection'],
+                            required: ['statement', 'explanation', 'confidence', 'status', 'category', 'temporalScope', 'quantitativeProjection'],
                             additionalProperties: false,
                         },
                     },
                     processingNotes: { type: ['string', 'null'] },
                 },
-                required: ['questionsExplored', 'insights', 'processingNotes'],
+                required: ['insights', 'processingNotes'],
                 additionalProperties: false,
             },
         };
@@ -443,12 +398,8 @@ export async function generateInsights(
             throw new InsightGenerationError('LLM returned invalid JSON', e);
         }
 
-        const questionsExplored = output.questionsExplored.length;
-        const questionsAnswerable = output.questionsExplored.filter((q) => q.answerable).length;
-
         console.log(
-            `[InsightGeneration] LLM explored ${questionsExplored} questions, ` +
-            `${questionsAnswerable} answerable, generated ${output.insights.length} insights`
+            `[InsightGeneration] LLM generated ${output.insights.length} insights`
         );
 
         // ====================================================================
@@ -461,8 +412,6 @@ export async function generateInsights(
                 insightsCreated: 0,
                 insightsReinforced: 0,
                 insightsSuperseded: 0,
-                questionsExplored,
-                questionsAnswerable,
                 createdInsightIds: [],
             };
         }
@@ -502,8 +451,6 @@ export async function generateInsights(
             insightsCreated: persistResult.created.length,
             insightsReinforced: persistResult.reinforced,
             insightsSuperseded: persistResult.superseded,
-            questionsExplored,
-            questionsAnswerable,
             createdInsightIds: persistResult.created,
         };
 
@@ -516,8 +463,6 @@ export async function generateInsights(
             insightsCreated: 0,
             insightsReinforced: 0,
             insightsSuperseded: 0,
-            questionsExplored: 0,
-            questionsAnswerable: 0,
             createdInsightIds: [],
             error: message,
         };

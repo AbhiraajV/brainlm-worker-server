@@ -166,9 +166,7 @@ export async function processMemoryPipeline(eventId: string): Promise<PipelineRe
                     result.stages.insight = insightResult;
 
                     console.log(
-                        `[Pipeline] Insight generation: created=${insightResult.insightsCreated}, ` +
-                        `questions=${insightResult.questionsExplored}, ` +
-                        `answerable=${insightResult.questionsAnswerable}`
+                        `[Pipeline] Insight generation: created=${insightResult.insightsCreated}`
                     );
                 }
             } catch (error) {

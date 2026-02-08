@@ -186,8 +186,6 @@ const handleGenerateInsights: JobHandler<GenerateInsightsPayload> = async (
       success: true,
       data: {
         insightsCreated: result.insightsCreated,
-        questionsExplored: result.questionsExplored,
-        questionsAnswerable: result.questionsAnswerable,
       },
     };
   } catch (error) {

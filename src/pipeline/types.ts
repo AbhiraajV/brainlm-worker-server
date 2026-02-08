@@ -78,8 +78,6 @@ export interface InsightResult {
     insightsCreated: number;
     insightsReinforced: number;
     insightsSuperseded: number;
-    questionsExplored: number;
-    questionsAnswerable: number;
     createdInsightIds: string[];
     error?: string;
 }

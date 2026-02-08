@@ -104,6 +104,21 @@ export async function interpretEvent(
         throw new InterpretationError(`Event not found: ${eventId}`);
     }
 
+    // 2b. Fetch last 5 same-type events for comparison
+    const recentSameTypeEvents = event.trackedType
+        ? await prisma.event.findMany({
+              where: {
+                  userId: event.userId,
+                  trackedType: event.trackedType,
+                  id: { not: event.id },
+                  occurredAt: { lt: event.occurredAt },
+              },
+              select: { content: true, occurredAt: true, rawJson: true },
+              orderBy: { occurredAt: 'desc' },
+              take: 5,
+          })
+        : [];
+
     // 3. Build LLM input with user context
     const userMessage = JSON.stringify({
         userName: event.user.name || 'User',
@@ -114,6 +129,11 @@ export async function interpretEvent(
             trackedType: event.trackedType || 'GENERAL',
             rawJson: event.rawJson || null,
         },
+        recentSameTypeEvents: recentSameTypeEvents.map(e => ({
+            content: e.content,
+            occurredAt: e.occurredAt.toISOString(),
+            rawJson: e.rawJson || null,
+        })),
     });
 
     // 4. Call OpenAI for rich interpretation with Structured Output

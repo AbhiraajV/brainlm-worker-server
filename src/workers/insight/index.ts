@@ -14,7 +14,6 @@ export {
     EvidenceRelevance,
     EvidenceRefSchema,
     InsightItemSchema,
-    QuestionExploredSchema,
     InsightOutputSchema,
     TriggerContext,
     ExistingInsight,
@@ -22,7 +21,6 @@ export {
 export type {
     EvidenceRef,
     InsightItem,
-    QuestionExplored,
     InsightOutput,
 } from './schema';
 
