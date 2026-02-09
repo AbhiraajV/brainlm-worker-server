@@ -16,7 +16,7 @@ export interface DetectPatternsPayload {
 
 export interface GenerateInsightsPayload {
   userId: string;
-  triggerType: 'new_event' | 'pattern_reinforced' | 'pattern_evolved' | 'pattern_created' | 'scheduled';
+  triggerType: 'new_event' | 'scheduled';
   eventId?: string;
   interpretationId?: string;
   patternId?: string;

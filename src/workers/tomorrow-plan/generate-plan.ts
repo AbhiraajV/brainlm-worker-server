@@ -1,5 +1,5 @@
 import prisma from '../../prisma';
-import { openai } from '../../services/openai';
+import { flexCompletion } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import {
   GenerateTomorrowPlanInput,
@@ -190,7 +190,7 @@ export async function generateTomorrowPlan(
 
     // Call OpenAI with STRUCTURED OUTPUT - guarantees valid JSON schema
     console.log(`[TomorrowPlan] Calling OpenAI with structured output...`);
-    const completion = await openai.chat.completions.create({
+    const completion = await flexCompletion({
       model: MODEL_CONFIG.model,
       messages: [
         { role: 'system', content: systemPrompt },

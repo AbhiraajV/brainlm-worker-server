@@ -1,5 +1,5 @@
 import prisma from '../../prisma';
-import { openai } from '../../services/openai';
+import { flexCompletion } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import { INTERPRETATION_PROMPT } from '../../prompts';
 
@@ -139,7 +139,7 @@ export async function interpretEvent(
     // 4. Call OpenAI for rich interpretation with Structured Output
     // JSON schema guarantees valid response - no Zod validation needed
     const { modelConfig, systemPrompt } = INTERPRETATION_PROMPT;
-    const completion = await openai.chat.completions.create({
+    const completion = await flexCompletion({
         model: modelConfig.model,
         messages: [
             { role: 'system', content: systemPrompt },

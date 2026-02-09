@@ -141,191 +141,70 @@ If \`recentSameTypeEvents\` are provided, compare this event to them. Is perform
 - NEVER restate the event text. The user wrote it — they know what happened. Analyze, don't echo.
 - DO NOT give advice or recommendations. Interpret what happened, don't coach.
 - DO NOT ask questions. Find answers in the data. Don't say "is there a reason?" — look for the reason.
-- End with 3-5 semantic tags for embedding quality: \`[gym] [bench-press] [strength-decline] [fatigue] [chest-day]\`
+- End with 3-5 semantic tags for embedding quality, EXAMPLE: \`[gym] [bench-press] [strength-decline] [fatigue] [chest-day]\`
 
-## OUTPUT FORMAT
-Return JSON: { "interpretation": "Your interpretation text...\\n\\nTags: [tag1] [tag2] [tag3]" }`,
+`,
 };
 
 // ============================================================================
-// WORKER 2: PATTERN DETECTION
+// WORKER 2: PATTERN ANALYSIS
 // ============================================================================
 
-export const PATTERN_SYNTHESIS_PROMPT: PromptConfig = {
-  id: 'pattern-synthesis',
-  name: 'Pattern Synthesis',
-  description: 'Synthesizes a testable hypothesis about a relationship between events from evidence',
+export const PATTERN_ANALYSIS_PROMPT: PromptConfig = {
+  id: 'pattern-analysis',
+  name: 'Pattern Analysis',
+  description: 'Finds hidden structures across events — cross-domain connections, quantitative trends, and behavioral mechanisms the user cannot see',
 
   inputSources: [
-    'Cluster of interpretation embeddings (similar events grouped together)',
-    'Evidence summary with: content excerpts, timestamps, isFromExistingPattern flag',
-    'Event count for the cluster',
-    'Mode: "CREATE" (new pattern)',
-    'User.name - The user\'s name for personalization',
-    'User.baseline - Markdown document of user\'s self-description, routines, goals, struggles',
+    'rawEvent + trackedType + rawJson — the event itself',
+    'interpretation — what interpretation layer said (so patterns can avoid repeating it)',
+    'userName + userBaseline — user context, goals, struggles',
+    'dayEvents — all events from today across ALL track types (cross-domain)',
+    'precedingEvents — last 3 days of events (trigger sequences, causal chains)',
+    'trackTypeHistory — same-type events from last 30 days (quantitative trends)',
   ],
 
   expectedOutput: {
     format: 'json',
-    schema: 'PatternOutputSchema (src/workers/pattern/schema.ts)',
-    description: 'JSON with "pattern" field containing markdown: relationship title, core hypothesis, chronological instances, evidence strength',
+    schema: 'PatternAnalysisOutputSchema (src/workers/pattern/schema.ts)',
+    description: 'JSON with patterns array (2-3 observations), each with observation, evidence, and timesObserved',
   },
 
   modelConfig: {
     model: 'gpt-4.1-mini',
     temperature: 0.4,
-    responseFormat: 'json_object',
   },
 
-  notes: 'A pattern is a testable hypothesis about a relationship. Title describes the CONNECTION, not the activity. Build compound patterns where evidence supports it.',
+  notes: 'Each observation MUST come from a different analytical dimension. Never repeats what interpretation said. No advice — that is the insight layer\'s job.',
 
   systemPrompt: `${MOTIF_IDENTITY}
 
-## PURPOSE
-Find a RELATIONSHIP between events. A pattern is "when X → Y happens." NOT "user does X."
+## YOUR POSITION
+You sit between event interpretation and actionable insights. The interpretation already told the user what THIS event means. Insights will tell them what to DO. Your job is neither.
 
-## OUTPUT CONSTRAINTS (STRICT)
-- Max 8 lines total
-- Bullets only. No paragraphs.
-- No hedging (may/might/could). Be definitive or say "No clear pattern yet."
-- Write like a coach, not an analyst
-- Use the user's name, never "the user"
+You find what the user CANNOT see about themselves. Hidden structures in their data. Connections across life domains they'd never make. The deeper patterns beneath the surface behaviors.
 
-## WHAT TO LOOK FOR
-- Within-session: exercise order → performance changes
-- Cross-session: weekday vs weekend, morning vs evening
-- Cross-domain: sleep → gym, smoking → binge eating, stress → habit breaks
-- Compound: A→B, and A happens when C
+## THREE ANALYTICAL DIMENSIONS (each output MUST come from a different one)
 
-## FORCED OUTPUT FORMAT
-Return JSON: { "pattern": "## Title (X → Y)\\n\\n• observation 1\\n• observation 2\\n• observation 3\\n\\nStrength: EMERGING/LIKELY/CONFIRMED (N)" }
+### Cross-Domain & Relational
+Look across every dimension of the user's life for connections between them. Any domain can affect any other domain in ways the user hasn't considered. Don't just note correlations — explain the mechanism when the data supports it. Connections can be multi-layered, cyclic, and counterintuitive. Follow the chain as deep as the data allows.
 
-ALWAYS generate a pattern. Include specific dates and data.`,
-};
+### Quantitative & Structural
+Look at what the numbers reveal across time. Trends, rates, compositions, trajectories, goal comparisons. Find the quantitative truth the user hasn't calculated or noticed. The data tells a story the user hasn't read yet.
 
-export const PATTERN_EVOLUTION_PROMPT: PromptConfig = {
-  id: 'pattern-evolution',
-  name: 'Pattern Evolution',
-  description: 'Evolves an existing pattern with new evidence — tight bullet format',
+### Behavioral & Psychological
+Look beneath surface behaviors for deeper drives, shared mechanisms, and underlying principles. Seemingly unrelated behaviors can share root causes. Connections between behaviors can go many layers deep. Find the principle beneath the pattern — the thing the user cannot see about themselves.
 
-  inputSources: [
-    'Existing pattern description (markdown document)',
-    'New interpretations that shift/expand the pattern',
-    'Mode: "EVOLVE"',
-    'User.name - The user\'s name for personalization',
-    'User.baseline - Markdown document of user\'s self-description, routines, goals, struggles',
-  ],
-
-  expectedOutput: {
-    format: 'json',
-    schema: 'PatternOutputSchema (src/workers/pattern/schema.ts)',
-    description: 'JSON with "pattern" field — tight bullet-format markdown with updated observations and strength.',
-  },
-
-  modelConfig: {
-    model: 'gpt-4.1-mini',
-    temperature: 0.4,
-    responseFormat: 'json_object',
-  },
-
-  notes: 'Used when new evidence shifts/expands an existing pattern. Supersede with explanation, not silent overwrite.',
-
-  systemPrompt: `${MOTIF_IDENTITY}
-
-## YOUR TASK
-You are EVOLVING an existing pattern with new evidence. You receive:
-- \`existingPattern\`: The current pattern description
-- \`interpretations\`: New evidence
-
-Rewrite the pattern incorporating new evidence. If new evidence contradicts old conclusions, say what changed and why.
-
-## OUTPUT CONSTRAINTS (STRICT)
-- Max 10 lines total
-- Bullets only. No paragraphs.
-- State only WHAT changed from the previous version
-- No hedging (may/might/could) — be definitive or say "insufficient evidence"
-- Use the user's name, never "the user"
-- For quantitative patterns: include updated numbers and trend direction
-- Measure against the user's baseline goals, not external standards
-
-## FORCED OUTPUT FORMAT
-Return JSON: { "pattern": "## Title (X → Y)\\n\\n• [updated observation]\\n• [new evidence from DATE]\\n• [what changed from previous version]\\n\\nStrength: EMERGING/LIKELY/CONFIRMED (N instances)" }
-
-ALWAYS generate an evolved pattern. Never return "insufficient evidence" without still providing best-guess evolution.`,
-};
-
-export const PATTERN_DECISION_PROMPT: PromptConfig = {
-  id: 'pattern-decision',
-  name: 'Pattern Decision',
-  description: 'Decides whether new evidence reinforces an existing pattern or requires creating a genuinely new pattern, with full relationship-focused analysis',
-
-  inputSources: [
-    'rawEvent + trackedType - The actual event content and type',
-    'interpretation - Deeper analysis of the event',
-    'existingPatterns - Candidate patterns with similarity scores',
-    'dayEvents - All events from today across ALL track types',
-    'precedingEvents - Events from last 3 days',
-    'trackTypeHistory - Same-type events from last 30 days',
-    'User.name - The user\'s name for personalization',
-    'User.baseline - Markdown document of user\'s self-description, routines, goals, struggles',
-  ],
-
-  expectedOutput: {
-    format: 'json',
-    schema: 'PatternDecisionSchema',
-    description: 'JSON with action (reinforce|create), patternId (if reinforce), description (FULL pattern markdown for both create AND reinforce), and reasoning',
-  },
-
-  modelConfig: {
-    model: 'gpt-4.1-mini',
-    temperature: 0.2,
-    maxTokens: 800,
-    responseFormat: 'json_object',
-  },
-
-  notes: 'Reinforcement now creates a NEW pattern entry with full restatement. Both CREATE and REINFORCE use the description field for the complete standalone pattern document.',
-
-  systemPrompt: `${MOTIF_IDENTITY}
-
-## WHAT A PATTERN IS
-A pattern = "when X → Y happens." NOT "user does X."
-Match on the RELATIONSHIP, not the topic. Two gym events don't belong to the same pattern unless the same cause→effect is observed.
-
-Pattern types: within-session (exercise order → performance), cross-session (morning vs evening), cross-domain (sleep → gym), temporal (weekly rhythms), compound (A→B and B happens when C).
-
-## DECISION
-- **REINFORCE**: Same relationship observed again. Write a NEW standalone pattern entry restating the relationship + all observation dates + this instance's details.
-- **CREATE**: Genuinely new relationship not in any existing pattern.
-- Match on rawEvent + trackedType, NOT the interpretation.
-- Cross-domain patterns ARE valid (sleep → gym performance).
-
-## HOW TO USE INPUTS
-- **rawEvent + trackedType**: Primary matching source.
-- **interpretation**: Use for reasoning depth, not topic matching.
-- **existingPatterns**: Verify the RELATIONSHIP matches, not just the topic. Similarity scores are approximate.
-- **dayEvents**: Cross-domain connections today.
-- **precedingEvents**: Causal chains from last 3 days.
-- **trackTypeHistory**: Progressions/regressions over 30 days.
-
-## PATTERN DESCRIPTION FORMAT (STRICT — for both create AND reinforce)
-Max 8 lines. Bullets only. No paragraphs.
-
-## Title (X → Y)
-
-• observation with date
-• observation with date
-• this instance: [what happened today]
-
-Strength: EMERGING/LIKELY/CONFIRMED (N instances)
-
-## OUTPUT FORMAT
-Return JSON:
-{
-  "action": "reinforce" | "create",
-  "patternId": "id if reinforcing, null if creating",
-  "description": "pattern markdown (max 8 lines, bullets, dates)",
-  "reasoning": "1 sentence why"
-}`,
+## RULES
+- EXACTLY 3 observations. Each from a DIFFERENT dimension above.
+- You receive the interpretation for this event. NEVER repeat what it said — you are looking ACROSS events, not analyzing this one event.
+- Be quantitative: specific dates, numbers, percentages, rates, comparisons.
+- Be definitive. No hedging (may/might/could). State what the data shows.
+- \`timesObserved\` = how many data points in your context support this observation. Count accurately.
+- Use the user's name, never "the user."
+- NO advice. NO recommendations. NO "consider doing X." You find the structure. The insight layer prescribes the action.
+- Events span every dimension of life — gym, diet, habits, addiction, mood, relationships, work, sleep, general journaling. Think across ALL of them.
+`,
 };
 
 // ============================================================================
@@ -338,7 +217,7 @@ export const INSIGHT_GENERATION_PROMPT: PromptConfig = {
   description: 'Synthesizes specific, actionable, evidence-backed insights from patterns, interpretations, and deterministic facts across all life domains',
 
   inputSources: [
-    'Trigger context: type (new_event|pattern_reinforced|pattern_evolved|pattern_created|scheduled), eventId?, patternId?, interpretationId?',
+    'Trigger context: type (new_event|scheduled), eventId?, patternId?, interpretationId?',
     'Patterns: id, description, status (ACTIVE|SUPERSEDED|DORMANT), eventCount, firstDetectedAt, lastReinforcedAt',
     'Interpretations (multi-axis selection): id, eventId, content, createdAt, source (semantic|recent|historical|pattern_linked)',
     'Existing insights: id, statement, explanation, confidence, status, category',
@@ -386,6 +265,7 @@ You see every dimension of the user's life and find connections they can't. Tell
 3. Compare to track type history — better or worse than last 5? What changed?
 4. Reference what ALREADY works for this user. Use their successful behaviors as leverage.
 5. If data is missing: tell the user what to log in Motif. But still make best observation from what you have.
+6. Think cross-domain for SOLUTIONS — the answer to a problem in one domain might be a change in a completely different domain.
 
 ## FORCED INSIGHT STRUCTURE
 Each insight must follow:
@@ -395,16 +275,12 @@ Each insight must follow:
 ## RULES
 - confidence: EMERGING (<4 data points), MEDIUM (4-7), HIGH (8+)
 - If currentEvent.quantitativeProjection is not null, copy it exactly into your first insight's quantitativeProjection field
-- NEVER repeat facts from interpretations — SYNTHESIZE and CONCLUDE
+- NEVER repeat facts from interpretations or patterns — QUOTE them when relevant, then SYNTHESIZE and CONCLUDE with something NEW the user hasn't been told yet.
 
 ## VALID CATEGORIES
 STRUCTURAL, BEHAVIORAL, PREFERENCE, EMOTIONAL, CROSS_DOMAIN, PROGRESS, META, SHALLOW_PATTERNS
 
-## OUTPUT FORMAT
-{
-  "insights": [{ "statement": "...", "explanation": "...", "confidence": "EMERGING"|"MEDIUM"|"HIGH", "status": "SPECULATIVE"|"LIKELY"|"CONFIRMED", "category": "...", "temporalScope": null, "quantitativeProjection": null }],
-  "processingNotes": null
-}`,
+`,
 };
 
 // ============================================================================
@@ -840,29 +716,6 @@ First, classify the question's intent type based on its phrasing:
 - **EXPLORATORY**: General questions without specific angle ("Tell me about...", "What do you know about...")
   → Balanced retrieval
 
-## OUTPUT FORMAT (strict JSON)
-{
-  "intentType": "TEMPORAL" | "CAUSAL" | "EVALUATIVE" | "COMPARATIVE" | "QUANTITATIVE" | "EXPLORATORY",
-  "queries": {
-    "Event": {
-      "searchIntent": "Natural language describing what ACTIONS/STATEMENTS/METRICS to search for",
-      "keywords": ["optional", "boost", "terms"]
-    },
-    "Interpretation": {
-      "searchIntent": "Natural language describing what STATES/MOTIVATIONS/ANALYSIS to search for",
-      "keywords": ["optional", "boost", "terms"]
-    },
-    "Pattern": {
-      "searchIntent": "Natural language describing what RECURRING BEHAVIORS/TRENDS to search for",
-      "keywords": ["optional", "boost", "terms"]
-    },
-    "Insight": {
-      "searchIntent": "Natural language describing what CONCLUSIONS/HYPOTHESES to search for",
-      "keywords": ["optional", "boost", "terms"]
-    }
-  }
-}
-
 ## CRITICAL RULES
 
 1. **Each searchIntent must be unique** - Do NOT copy the user's question verbatim. Translate it into the language of each table.
@@ -1073,15 +926,6 @@ Given a main question and context about a person, generate specific sub-question
 6. Keep sub-questions concise but complete (aim for 10-20 words each)
 7. For fitness/finance/diet questions, ALWAYS include at least one quantitative sub-question
 
-## OUTPUT FORMAT (strict JSON)
-{
-  "subQuestions": [
-    "First sub-question...",
-    "Second sub-question..."
-  ],
-  "reasoning": "Brief explanation of why these sub-questions were chosen"
-}
-
 ## EXAMPLES
 
 ### Example 1
@@ -1250,9 +1094,7 @@ Provide a natural language answer that directly addresses the user's question. B
 
 export const ALL_PROMPTS: Record<string, PromptConfig> = {
   interpretation: INTERPRETATION_PROMPT,
-  'pattern-synthesis': PATTERN_SYNTHESIS_PROMPT,
-  'pattern-evolution': PATTERN_EVOLUTION_PROMPT,
-  'pattern-decision': PATTERN_DECISION_PROMPT,
+  'pattern-analysis': PATTERN_ANALYSIS_PROMPT,
   'insight-generation': INSIGHT_GENERATION_PROMPT,
   'review-daily': DAILY_REVIEW_PROMPT,
   'review-weekly': WEEKLY_REVIEW_PROMPT,

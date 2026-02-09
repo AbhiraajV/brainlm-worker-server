@@ -1,5 +1,5 @@
 import prisma from '../../prisma';
-import { openai } from '../../services/openai';
+import { flexCompletion } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import { Prisma } from '@prisma/client';
 import {
@@ -302,7 +302,7 @@ export async function generateReview(
         const { modelConfig, systemPrompt } = promptConfig;
         console.log(`[ReviewGeneration] Calling LLM (${modelConfig.model}) with JSON schema`);
 
-        const completion = await openai.chat.completions.create({
+        const completion = await flexCompletion({
             model: modelConfig.model,
             messages: [
                 { role: 'system', content: systemPrompt },

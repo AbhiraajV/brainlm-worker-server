@@ -5,8 +5,6 @@
  * Currently synchronous, but structured for easy queue migration.
  */
 
-import { PatternOutcome } from '../workers/pattern/schema';
-
 // ============================================================================
 // Pipeline Job Types (Queue-Ready)
 // ============================================================================
@@ -60,12 +58,8 @@ export interface InterpretResult {
 
 export interface PatternDetectResult {
     success: boolean;
-    outcome: PatternOutcome;      // Mandatory outcome
-    patternId: string;            // The affected pattern
     patternsCreated: number;
-    patternsReinforced: number;
-    patternsEvolved: number;      // NEW
-    clustersFound: number;
+    patternIds: string[];
 }
 
 export interface RecommendResult {

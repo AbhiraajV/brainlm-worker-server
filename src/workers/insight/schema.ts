@@ -119,7 +119,7 @@ export type InsightOutput = z.infer<typeof InsightOutputSchema>;
 // ============================================================================
 
 export interface TriggerContext {
-    type: 'new_event' | 'pattern_reinforced' | 'pattern_evolved' | 'pattern_created' | 'scheduled';
+    type: 'new_event' | 'scheduled';
     eventId?: string;
     patternId?: string;
     interpretationId?: string;

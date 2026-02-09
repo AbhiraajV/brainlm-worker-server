@@ -1,5 +1,5 @@
 import prisma from '../../prisma';
-import { openai } from '../../services/openai';
+import { flexCompletion } from '../../services/openai';
 import { embedText } from '../../services/embedding';
 import {
     TriggerContext,
@@ -367,7 +367,7 @@ export async function generateInsights(
             },
         };
 
-        const completion = await openai.chat.completions.create({
+        const completion = await flexCompletion({
             model: modelConfig.model,
             messages: [
                 { role: 'system', content: systemPrompt },

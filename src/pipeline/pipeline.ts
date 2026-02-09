@@ -1,6 +1,6 @@
 import prisma from '../prisma';
 import { interpretEvent } from '../workers/interpretation';
-import { detectPatternsForEvent, PatternOutcome } from '../workers/pattern';
+import { detectPatternsForEvent } from '../workers/pattern';
 import { generateInsights, TriggerContext } from '../workers/insight';
 import { PipelineResult } from './types';
 
@@ -9,9 +9,7 @@ import { PipelineResult } from './types';
 // ============================================================================
 
 const ENABLE_PATTERN_DETECTION = true;
-const ENABLE_INSIGHTS = true;  // Enable Insight Worker (Worker 3)
-const ENABLE_INSIGHTS_ON_PATTERN_CHANGE = true;  // Generate insights when pattern created/evolved
-const ENABLE_INSIGHTS_ON_EVERY_EVENT = false;    // Too expensive - disable by default
+const ENABLE_INSIGHTS = true;
 const ENABLE_RECOMMENDATIONS = false; // Future: enable when Worker 4 is ready
 
 // ============================================================================
@@ -99,7 +97,7 @@ export async function processMemoryPipeline(eventId: string): Promise<PipelineRe
 
                 console.log(
                     `[Pipeline] Pattern detection: created=${patternResult.patternsCreated}, ` +
-                    `reinforced=${patternResult.patternsReinforced}, clusters=${patternResult.clustersFound}`
+                    `patternIds=${patternResult.patternIds.join(',')}`
                 );
             }
         } catch (error) {
@@ -114,69 +112,41 @@ export async function processMemoryPipeline(eventId: string): Promise<PipelineRe
     // Stage 3: Insight Generation
     // ========================================================================
 
-    if (ENABLE_INSIGHTS) {
-        // Determine if we should generate insights based on pattern outcome
-        const patternResult = result.stages.patternDetect;
-        const shouldGenerateInsights =
-            ENABLE_INSIGHTS_ON_EVERY_EVENT ||
-            (ENABLE_INSIGHTS_ON_PATTERN_CHANGE &&
-                patternResult &&
-                (patternResult.outcome === PatternOutcome.CREATED_NEW_PATTERN ||
-                    patternResult.outcome === PatternOutcome.EVOLVED_PATTERN));
+    if (ENABLE_INSIGHTS && result.stages.patternDetect?.success) {
+        try {
+            console.log(`[Pipeline] Stage 3: Insight Generation`);
 
-        if (shouldGenerateInsights) {
-            try {
-                console.log(`[Pipeline] Stage 3: Insight Generation`);
+            const eventForInsight = await prisma.event.findUnique({
+                where: { id: eventId },
+                select: { userId: true },
+            });
 
-                // Get userId from event
-                const eventForInsight = await prisma.event.findUnique({
-                    where: { id: eventId },
-                    select: { userId: true },
+            if (eventForInsight) {
+                const patternResult = result.stages.patternDetect;
+
+                const trigger: TriggerContext = {
+                    type: 'new_event',
+                    eventId,
+                    interpretationId: result.stages.interpret?.interpretationId,
+                    patternId: patternResult?.patternIds[0],
+                };
+
+                const insightResult = await generateInsights({
+                    userId: eventForInsight.userId,
+                    trigger,
                 });
 
-                if (eventForInsight) {
-                    // Determine trigger type based on pattern outcome
-                    let triggerType: TriggerContext['type'] = 'new_event';
-                    if (patternResult) {
-                        switch (patternResult.outcome) {
-                            case PatternOutcome.CREATED_NEW_PATTERN:
-                                triggerType = 'pattern_created';
-                                break;
-                            case PatternOutcome.EVOLVED_PATTERN:
-                                triggerType = 'pattern_evolved';
-                                break;
-                            case PatternOutcome.REINFORCED_PATTERN:
-                                triggerType = 'pattern_reinforced';
-                                break;
-                        }
-                    }
+                result.stages.insight = insightResult;
 
-                    const trigger: TriggerContext = {
-                        type: triggerType,
-                        eventId,
-                        interpretationId: result.stages.interpret?.interpretationId,
-                        patternId: patternResult?.patternId,
-                    };
-
-                    const insightResult = await generateInsights({
-                        userId: eventForInsight.userId,
-                        trigger,
-                    });
-
-                    result.stages.insight = insightResult;
-
-                    console.log(
-                        `[Pipeline] Insight generation: created=${insightResult.insightsCreated}`
-                    );
-                }
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Unknown insight generation error';
-                errors.push(`Insight generation error: ${message}`);
-                console.error(`[Pipeline] Insight generation failed:`, error);
-                // Continue - insight generation failure shouldn't fail the whole pipeline
+                console.log(
+                    `[Pipeline] Insight generation: created=${insightResult.insightsCreated}`
+                );
             }
-        } else {
-            console.log(`[Pipeline] Stage 3: Insight Generation (skipped - pattern only reinforced)`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown insight generation error';
+            errors.push(`Insight generation error: ${message}`);
+            console.error(`[Pipeline] Insight generation failed:`, error);
+            // Continue - insight generation failure shouldn't fail the whole pipeline
         }
     }
 

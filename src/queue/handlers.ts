@@ -12,7 +12,7 @@ import {
 
 // Import workers
 import { interpretEvent } from '../workers/interpretation';
-import { detectPatternsForEvent, PatternOutcome } from '../workers/pattern';
+import { detectPatternsForEvent } from '../workers/pattern';
 import { generateInsights, TriggerContext } from '../workers/insight';
 import { generateReview, ReviewType } from '../workers/review';
 import { generateTomorrowPlan } from '../workers/tomorrow-plan';
@@ -115,24 +115,19 @@ const handleDetectPatterns: JobHandler<DetectPatternsPayload> = async (
     });
 
     // Chain: always enqueue insight generation for every event
-    // LLM decides 1-3 insights per event (even if just acknowledging existing coverage)
     await enqueueGenerateInsights({
       userId,
-      triggerType: result.outcome === PatternOutcome.CREATED_NEW_PATTERN
-        ? 'pattern_created'
-        : 'pattern_reinforced',
+      triggerType: 'new_event',
       eventId: triggerEventId,
       interpretationId,
-      patternId: result.patternId,
+      patternId: result.patternIds[0],
     });
 
     return {
       success: true,
       data: {
-        outcome: result.outcome,
-        patternId: result.patternId,
         patternsCreated: result.patternsCreated,
-        patternsReinforced: result.patternsReinforced,
+        patternIds: result.patternIds,
       },
     };
   } catch (error) {
